@@ -33,7 +33,7 @@ dataset:
     min_duration_sec: 4
 
 dataloader:
-  batch_size: 64
+  batch_size: 32
   num_workers: 4
   pin_memory: true
 
@@ -50,4 +50,4 @@ trainer:
   masked_only: false
   norm_pix: false
   amp: true
-  log_interval: 50
+  log_interval: 100

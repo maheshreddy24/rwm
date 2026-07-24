@@ -3,7 +3,7 @@ import os
 import time
 from dataclasses import asdict
 from typing import Optional
-
+from tqdm import tqdm
 import torch
 import torch.nn as nn
 from PIL import Image
@@ -117,9 +117,9 @@ class Trainer:
 
     def train(self, num_epochs: Optional[int] = None):
         num_epochs = num_epochs or int(float(self.config.num_epochs))
-        for _ in range(num_epochs):
+        for _ in tqdm(range(num_epochs), total=num_epochs, leave = False):
             self.model.train()
-            for batch in self.train_loader:
+            for batch in tqdm(self.train_loader, total=len(self.train_loader), leave=True):
                 loss = self._train_step(batch)
                 self.global_step += 1
                 if self.global_step % int(float(self.config.log_interval)) == 0:
