@@ -32,3 +32,7 @@ class TrainerConfig:
     # misc
     amp: bool = False
     log_interval: int = 50
+
+    # wandb
+    wandb_project: str = "rvm"
+    wandb_name: Optional[str] = None

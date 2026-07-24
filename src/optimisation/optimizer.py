@@ -6,7 +6,8 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-
+import wandb
+import time
 from .config import TrainerConfig
 
 
@@ -42,14 +43,14 @@ class Trainer:
         self.model = model.to(self.device)
         self.train_loader = train_loader
         self.eval_loader = eval_loader
-        self.checkpoint_dir = self.config.checkpoint_dir
+        self.checkpoint_dir = os.path.join(self.config.checkpoint_dir, f'exp_{time.time()}')
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
         self.optimizer = None
         self.scheduler = None
         self.scaler = torch.amp.GradScaler(enabled=self.config.amp and self.device == "cuda")
         self.epoch = 0
-        self.global_step = 0
+        self.global_step = 0    
 
         self.init_optim()
 
@@ -70,6 +71,12 @@ class Trainer:
             lr_lambda=lambda step: _warmup_cosine(
                 step, warmup_steps, total_steps, float(self.config.lr), float(self.config.min_lr)
             ),
+        )
+
+        wandb.init(
+            project=self.config.wandb_project,
+            name=self.config.wandb_name,
+            config=asdict(self.config),
         )
 
     def save_checkpoint(self, name: str = "last.pt"):
@@ -115,6 +122,7 @@ class Trainer:
                 if self.global_step % int(float(self.config.log_interval)) == 0:
                     lr = self.optimizer.param_groups[0]["lr"]
                     print(f"epoch {self.epoch} step {self.global_step} loss {loss:.4f} lr {lr:.2e}")
+                    wandb.log({"train/loss": loss, "train/lr": lr, "epoch": self.epoch}, step=self.global_step)
 
             self.epoch += 1
             self.save_checkpoint()
@@ -122,6 +130,7 @@ class Trainer:
             if self.eval_loader is not None:
                 eval_loss = self.eval()
                 print(f"epoch {self.epoch} eval_loss {eval_loss:.4f}")
+                wandb.log({"eval/loss": eval_loss, "epoch": self.epoch}, step=self.global_step)
 
     def _train_step(self, batch):
         source, target, target_deltas = _unpack_batch(batch)
