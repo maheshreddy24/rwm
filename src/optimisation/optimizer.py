@@ -1,13 +1,16 @@
 import math
 import os
+import time
 from dataclasses import asdict
 from typing import Optional
 
 import torch
 import torch.nn as nn
+from PIL import Image
 from torch.utils.data import DataLoader
 import wandb
-import time
+
+from src.models.rvm import patchify
 from .config import TrainerConfig
 
 
@@ -124,13 +127,21 @@ class Trainer:
                     print(f"epoch {self.epoch} step {self.global_step} loss {loss:.4f} lr {lr:.2e}")
                     wandb.log({"train/loss": loss, "train/lr": lr, "epoch": self.epoch}, step=self.global_step)
 
+                if self.eval_loader is not None and self.global_step % int(float(self.config.eval_interval)) == 0:
+                    self._evaluate_and_log()
+                    self.model.train()
+
             self.epoch += 1
             self.save_checkpoint()
 
             if self.eval_loader is not None:
-                eval_loss = self.eval()
-                print(f"epoch {self.epoch} eval_loss {eval_loss:.4f}")
-                wandb.log({"eval/loss": eval_loss, "epoch": self.epoch}, step=self.global_step)
+                self._evaluate_and_log()
+
+    def _evaluate_and_log(self):
+        eval_loss = self.eval()
+        print(f"epoch {self.epoch} step {self.global_step} eval_loss {eval_loss:.4f}")
+        wandb.log({"eval/loss": eval_loss, "epoch": self.epoch}, step=self.global_step)
+        self._save_patch_visualizations()
 
     def _train_step(self, batch):
         source, target, target_deltas = _unpack_batch(batch)
@@ -173,3 +184,74 @@ class Trainer:
             n_batches += 1
 
         return total_loss / max(n_batches, 1)
+
+    @torch.no_grad()
+    def _save_patch_visualizations(self):
+        """Save original vs. reconstructed crops for a random sample of masked patches.
+
+        Picks patches from the first frame of the first eval batch's first sample,
+        un-normalizing predictions with the ground-truth patch stats when
+        `norm_pix` is enabled (the model regresses to normalized patches in that mode).
+        """
+        if self.eval_loader is None:
+            return
+
+        was_training = self.model.training
+        self.model.eval()
+
+        batch = next(iter(self.eval_loader))
+        source, target, target_deltas = _unpack_batch(batch)
+        source = source.to(self.device)
+        target = target.to(self.device)
+        target_deltas = target_deltas.to(self.device)
+
+        out = self.model(source, target, target_deltas)
+
+        patch = self.model.patch
+        gt = patchify(target[0, 0].unsqueeze(0), patch)[0]      # (N, patch*patch*3)
+        pred = out["pred"][0, 0].float()                        # (N, patch*patch*3)
+        mask = out["mask"][0, 0]                                 # (N,)  1 = masked
+
+        if self.config.norm_pix:
+            mu = gt.mean(dim=-1, keepdim=True)
+            var = gt.var(dim=-1, keepdim=True)
+            pred = pred * (var + 1e-6).sqrt() + mu
+
+        masked_idx = (mask > 0.5).nonzero(as_tuple=True)[0]
+        if masked_idx.numel() == 0:
+            if was_training:
+                self.model.train()
+            return
+
+        k = min(int(float(self.config.num_vis_patches)), masked_idx.numel())
+        chosen = masked_idx[torch.randperm(masked_idx.numel(), device=masked_idx.device)[:k]]
+
+        originals = [self._patch_to_pil(gt[i], patch) for i in chosen.tolist()]
+        reconstructions = [self._patch_to_pil(pred[i], patch) for i in chosen.tolist()]
+        grid = self._make_comparison_grid(originals, reconstructions, patch)
+
+        vis_dir = os.path.join(self.checkpoint_dir, "image_vis")
+        os.makedirs(vis_dir, exist_ok=True)
+        grid.save(os.path.join(vis_dir, f"{self.epoch}_{self.global_step}.png"))
+
+        if was_training:
+            self.model.train()
+
+    @staticmethod
+    def _patch_to_pil(patch_vec: torch.Tensor, patch: int, scale: int = 8) -> Image.Image:
+        arr = patch_vec.reshape(patch, patch, 3).clamp(0, 1).mul(255).byte().cpu().numpy()
+        img = Image.fromarray(arr, mode="RGB")
+        return img.resize((patch * scale, patch * scale), Image.NEAREST)
+
+    @staticmethod
+    def _make_comparison_grid(originals, reconstructions, patch: int, pad: int = 4) -> Image.Image:
+        cell = originals[0].width
+        n = len(originals)
+        width = n * cell + (n + 1) * pad
+        height = 2 * cell + 3 * pad
+        canvas = Image.new("RGB", (width, height), color=(255, 255, 255))
+        for i, img in enumerate(originals):
+            canvas.paste(img, (pad + i * (cell + pad), pad))
+        for i, img in enumerate(reconstructions):
+            canvas.paste(img, (pad + i * (cell + pad), 2 * pad + cell))
+        return canvas
