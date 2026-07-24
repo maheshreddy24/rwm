@@ -56,19 +56,19 @@ class Trainer:
     def init_optim(self):
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            lr=self.config.lr,
-            weight_decay=self.config.weight_decay,
-            betas=self.config.betas,
-            eps=self.config.eps,
+            lr=float(self.config.lr),
+            weight_decay=float(self.config.weight_decay),
+            betas=tuple(float(b) for b in self.config.betas),
+            eps=float(self.config.eps),
         )
 
         steps_per_epoch = len(self.train_loader)
-        total_steps = steps_per_epoch * self.config.num_epochs
-        warmup_steps = steps_per_epoch * self.config.warmup_epochs
+        total_steps = steps_per_epoch * int(float(self.config.num_epochs))
+        warmup_steps = steps_per_epoch * int(float(self.config.warmup_epochs))
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer,
             lr_lambda=lambda step: _warmup_cosine(
-                step, warmup_steps, total_steps, self.config.lr, self.config.min_lr
+                step, warmup_steps, total_steps, float(self.config.lr), float(self.config.min_lr)
             ),
         )
 
@@ -106,13 +106,13 @@ class Trainer:
         return True
 
     def train(self, num_epochs: Optional[int] = None):
-        num_epochs = num_epochs or self.config.num_epochs
+        num_epochs = num_epochs or int(float(self.config.num_epochs))
         for _ in range(num_epochs):
             self.model.train()
             for batch in self.train_loader:
                 loss = self._train_step(batch)
                 self.global_step += 1
-                if self.global_step % self.config.log_interval == 0:
+                if self.global_step % int(float(self.config.log_interval)) == 0:
                     lr = self.optimizer.param_groups[0]["lr"]
                     print(f"epoch {self.epoch} step {self.global_step} loss {loss:.4f} lr {lr:.2e}")
 
@@ -139,7 +139,7 @@ class Trainer:
         self.scaler.scale(loss).backward()
         if self.config.grad_clip_norm is not None:
             self.scaler.unscale_(self.optimizer)
-            nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip_norm)
+            nn.utils.clip_grad_norm_(self.model.parameters(), float(self.config.grad_clip_norm))
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.scheduler.step()
