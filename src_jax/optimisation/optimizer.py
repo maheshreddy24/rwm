@@ -175,7 +175,9 @@ class Trainer:
         print(f"model params: {n_params / 1e6:.1f}M")
 
         steps_per_epoch = len(self.train_loader)
+        #! check this
         tx, self.schedule = build_optimizer(self.config, steps_per_epoch)
+        # in jax we need a train state I belive.
         self.state = train_state.TrainState.create(
             apply_fn=self.model.apply, params=params, tx=tx
         )
