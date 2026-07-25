@@ -15,6 +15,7 @@ class TrainerConfig:
     # runtime
     checkpoint_dir: str = "checkpoints"
     seed: Optional[int] = None
+    init_params_path: Optional[str] = None  # .npz of pretrained params (see optimizer.load_pretrained_params)
 
     # optimizer -- AdamW with the betas/wd used by MAE-style ViT recipes
     lr: float = 1.5e-4

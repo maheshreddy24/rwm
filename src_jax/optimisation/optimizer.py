@@ -1,6 +1,7 @@
 import dataclasses
 import os
 import time
+from collections.abc import Mapping
 from typing import Optional
 
 import jax
@@ -24,6 +25,26 @@ def _to_numpy_batch(batch):
         "target": batch["target"].numpy(),
         "target_deltas": batch["target_deltas"].numpy().astype(np.int32),
     }
+
+
+def _tree_shapes(tree) -> dict:
+    """Plain-dict-of-shapes view of a params pytree, robust to dict vs. FrozenDict nodes."""
+    if isinstance(tree, Mapping):
+        return {k: _tree_shapes(v) for k, v in tree.items()}
+    return tuple(jnp.shape(tree))
+
+
+def load_pretrained_params(path: str) -> dict:
+    """Load a Flax params pytree saved as a flat "/"-joined-key .npz (see recover_tree)."""
+    flat = np.load(path, allow_pickle=False)
+    tree = {}
+    for key in flat.files:
+        parts = key.split("/")
+        node = tree
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = jnp.asarray(flat[key])
+    return tree
 
 
 def build_schedule(config: TrainerConfig, steps_per_epoch: int) -> optax.Schedule:
@@ -137,6 +158,19 @@ class Trainer:
             rng_key=state_rng,
             method=self.model.reconstruct,
         )["params"]
+        if self.config.init_params_path is not None:
+            pretrained = load_pretrained_params(self.config.init_params_path)
+            init_shapes = _tree_shapes(params)
+            pretrained_shapes = _tree_shapes(pretrained)
+            if init_shapes != pretrained_shapes:
+                raise ValueError(
+                    f"pretrained params at {self.config.init_params_path} don't match "
+                    f"model_config's param tree (mismatched keys/shapes):\n"
+                    f"expected: {init_shapes}\ngot: {pretrained_shapes}"
+                )
+            params = pretrained
+            print(f"initialized params from {self.config.init_params_path}")
+
         n_params = sum(x.size for x in jax.tree_util.tree_leaves(params))
         print(f"model params: {n_params / 1e6:.1f}M")
 
