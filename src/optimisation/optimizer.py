@@ -10,7 +10,7 @@ from PIL import Image
 from torch.utils.data import DataLoader
 import wandb
 
-from src.models.rvm import patchify
+from src.models.rvm import patchify, unpatchify
 from .config import TrainerConfig
 
 
@@ -141,7 +141,7 @@ class Trainer:
         eval_loss = self.eval()
         print(f"epoch {self.epoch} step {self.global_step} eval_loss {eval_loss:.4f}")
         wandb.log({"eval/loss": eval_loss, "epoch": self.epoch}, step=self.global_step)
-        self._save_patch_visualizations()
+        self._save_reconstruction_visualization()
 
     def _train_step(self, batch):
         source, target, target_deltas = _unpack_batch(batch)
@@ -186,12 +186,12 @@ class Trainer:
         return total_loss / max(n_batches, 1)
 
     @torch.no_grad()
-    def _save_patch_visualizations(self):
-        """Save original vs. reconstructed crops for a random sample of masked patches.
+    def _save_reconstruction_visualization(self):
+        """Save the ground-truth frame next to its full reconstruction, side by side.
 
-        Picks patches from the first frame of the first eval batch's first sample,
-        un-normalizing predictions with the ground-truth patch stats when
-        `norm_pix` is enabled (the model regresses to normalized patches in that mode).
+        Uses the first frame of the first eval batch's first sample, un-normalizing
+        predictions with the ground-truth patch stats when `norm_pix` is enabled
+        (the model regresses to normalized patches in that mode).
         """
         if self.eval_loader is None:
             return
@@ -208,27 +208,20 @@ class Trainer:
         out = self.model(source, target, target_deltas)
 
         patch = self.model.patch
-        gt = patchify(target[0, 0].unsqueeze(0), patch)[0]      # (N, patch*patch*3)
-        pred = out["pred"][0, 0].float()                        # (N, patch*patch*3)
-        mask = out["mask"][0, 0]                                 # (N,)  1 = masked
+        gt_img = target[0, 0]                                   # (3, H, W)
+        pred = out["pred"][0, 0].float().unsqueeze(0)           # (1, N, patch*patch*3)
 
         if self.config.norm_pix:
-            mu = gt.mean(dim=-1, keepdim=True)
-            var = gt.var(dim=-1, keepdim=True)
-            pred = pred * (var + 1e-6).sqrt() + mu
+            gt_patches = patchify(gt_img.unsqueeze(0), patch)[0]
+            mu = gt_patches.mean(dim=-1, keepdim=True)
+            var = gt_patches.var(dim=-1, keepdim=True)
+            pred = (pred[0] * (var + 1e-6).sqrt() + mu).unsqueeze(0)
 
-        masked_idx = (mask > 0.5).nonzero(as_tuple=True)[0]
-        if masked_idx.numel() == 0:
-            if was_training:
-                self.model.train()
-            return
+        recon_img = unpatchify(pred, patch, out["grid"])[0]     # (3, H, W)
 
-        k = min(int(float(self.config.num_vis_patches)), masked_idx.numel())
-        chosen = masked_idx[torch.randperm(masked_idx.numel(), device=masked_idx.device)[:k]]
-
-        originals = [self._patch_to_pil(gt[i], patch) for i in chosen.tolist()]
-        reconstructions = [self._patch_to_pil(pred[i], patch) for i in chosen.tolist()]
-        grid = self._make_comparison_grid(originals, reconstructions, patch)
+        grid = self._make_side_by_side(
+            self._tensor_to_pil(gt_img), self._tensor_to_pil(recon_img)
+        )
 
         vis_dir = os.path.join(self.checkpoint_dir, "image_vis")
         os.makedirs(vis_dir, exist_ok=True)
@@ -238,20 +231,15 @@ class Trainer:
             self.model.train()
 
     @staticmethod
-    def _patch_to_pil(patch_vec: torch.Tensor, patch: int, scale: int = 8) -> Image.Image:
-        arr = patch_vec.reshape(patch, patch, 3).clamp(0, 1).mul(255).byte().cpu().numpy()
-        img = Image.fromarray(arr, mode="RGB")
-        return img.resize((patch * scale, patch * scale), Image.NEAREST)
+    def _tensor_to_pil(img: torch.Tensor) -> Image.Image:
+        arr = img.clamp(0, 1).mul(255).byte().permute(1, 2, 0).cpu().numpy()
+        return Image.fromarray(arr, mode="RGB")
 
     @staticmethod
-    def _make_comparison_grid(originals, reconstructions, patch: int, pad: int = 4) -> Image.Image:
-        cell = originals[0].width
-        n = len(originals)
-        width = n * cell + (n + 1) * pad
-        height = 2 * cell + 3 * pad
+    def _make_side_by_side(left: Image.Image, right: Image.Image, pad: int = 4) -> Image.Image:
+        width = left.width + right.width + 3 * pad
+        height = max(left.height, right.height) + 2 * pad
         canvas = Image.new("RGB", (width, height), color=(255, 255, 255))
-        for i, img in enumerate(originals):
-            canvas.paste(img, (pad + i * (cell + pad), pad))
-        for i, img in enumerate(reconstructions):
-            canvas.paste(img, (pad + i * (cell + pad), 2 * pad + cell))
+        canvas.paste(left, (pad, pad))
+        canvas.paste(right, (2 * pad + left.width, pad))
         return canvas
