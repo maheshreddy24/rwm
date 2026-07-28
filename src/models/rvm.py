@@ -305,6 +305,7 @@ class RVM(nn.Module):
         with self._encoder_ctx():
             tgt = self._blocks(torch.cat([cls_emb, visible], dim=1))    # (B*Tt, 1+M, D)
 
+        #! this self.decoder_embed is a linear layer to reduce the dim of the embeddings
         tgt = self.decoder_embed(tgt)                                   # (B*Tt, 1+M, Dd)
         tgt_cls, tgt_vis = tgt[:, :1], tgt[:, 1:]                       # (B*Tt, 1, Dd), (B*Tt, M, Dd)
 
@@ -315,11 +316,14 @@ class RVM(nn.Module):
         )                                                             
           # (B*Tt, N, Dd)  grid order
 
+        
+        # ! here the target_deltas is the index into future timestamp, to be reconstructed.
         deltas = target_deltas.reshape(-1).clamp(0, self.max_delta - 1)  # (B*Tt,)
         full = full + self.delta_embed(deltas).unsqueeze(1)             # (B*Tt, 1, Dd) broadcast over N
         full = full + self._decoder_posenc(N, full.device, full.dtype)  # (N, Dd)       broadcast over B*Tt
         queries = torch.cat([tgt_cls, full], dim=1)                     # (B*Tt, 1+N, Dd)
 
+        # the (B, Ts, 1+N, D) --> (bs, L, D). 
         # Here time IS flattened into the token axis on purpose: every target token
         # must be able to attend to every source token from every source frame.
         kv = memory.reshape(B, Ts * memory.shape[2], self.d_enc)        # (B, L, D)
