@@ -632,7 +632,8 @@ class VideoSiamMAE(nn.Module):
         'mask': mask,  # (B, Tt, h, w, 1)
         'features': encoded_source_tokens,  # (B, Ts, N+1, F)
         'state': state,
-        'representation': decoded[..., 1:, :]  # (B, Tt, N, C)
+        'representation': decoded[..., 1:, :],  # (B, Tt, N, C)
+        'inds_restore': inds_restore
     }
 
 
