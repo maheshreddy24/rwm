@@ -488,78 +488,78 @@ class VideoSiamMAE(nn.Module):
       rng_key = self.make_rng('default')
 
     # Tokenize source and target frames
-    source_tokens = self.tokenizer(source_frames)  # (B, Ts, h, w, D)
+    source_tokens = self.tokenizer(source_frames)
     *_, num_source_frames, _, _, source_tokens_d = source_tokens.shape
-    target_tokens = self.tokenizer(target_frames)  # (B, Tt, h, w, D)
+    target_tokens = self.tokenizer(target_frames)
     *b, num_target_frames, target_tokens_h, target_tokens_w, target_tokens_d = (
         target_tokens.shape
     )
 
     # Flatten source tokens
-    source_tokens = einops.rearrange(source_tokens, '... h w D -> ... (h w) D')  # (B, Ts, N, D), N = h*w
+    source_tokens = einops.rearrange(source_tokens, '... h w D -> ... (h w) D')
 
     #   end cls token to source
     cls_token = jnp.broadcast_to(
         self.cls_token, b + [num_source_frames, 1, self.cls_token.shape[-1]]
-    )  # (B, Ts, 1, D)
-    source_tokens = jnp.concatenate([cls_token, source_tokens], axis=-2)  # (B, Ts, N+1, D)
+    )
+    source_tokens = jnp.concatenate([cls_token, source_tokens], axis=-2)
 
     # Mask target tokens
     target_tokens_flat = einops.rearrange(
         target_tokens, '... h w D -> ... (h w) D'
-    )  # (B, Tt, N, D)
+    )
     visible_target, inds_restore, mask = random_masking(
         rng_key, target_tokens_flat, self.masking_ratio
-    )  # visible_target: (B, Tt, k, D); inds_restore, mask: (B, Tt, N, 1); k = int(N*(1-masking_ratio))
+    )
     cls_token_t = jnp.broadcast_to(
         self.cls_token, b + [num_target_frames, 1, self.cls_token.shape[-1]]
-    )  # (B, Tt, 1, D)
-    target_with_cls = jnp.concatenate([cls_token_t, visible_target], axis=-2)  # (B, Tt, k+1, D)
+    )
+    target_with_cls = jnp.concatenate([cls_token_t, visible_target], axis=-2)
 
     # Encode source frames
-    num_source_tokens = source_tokens.shape[-2]  # N+1
+    num_source_tokens = source_tokens.shape[-2]
     source_tokens = jnp.reshape(
         source_tokens,
         (np.prod(b) * num_source_frames, num_source_tokens, source_tokens_d),
-    )  # (prod(B)*Ts, N+1, D)
-    encoded_source_tokens = self.encoder(source_tokens)  # (prod(B)*Ts, N+1, E)
+    )
+    encoded_source_tokens = self.encoder(source_tokens)
     encoded_source_tokens = jnp.reshape(
         encoded_source_tokens,
         b + [num_source_frames, num_source_tokens, encoded_source_tokens.shape[-1]],
-    )  # (B, Ts, N+1, E)
+    )
 
     # Scan encoded source tokens through time with RNN core
     if state is None:
       state = self.rnn_core.initializer(
-          encoded_source_tokens[..., 0, :, :],  # (B, N+1, E)
+          encoded_source_tokens[..., 0, :, :],
           batch_shape=tuple(b),
       )
 
     all_encoded_source_tokens = []
     for t in range(num_source_frames):
       encoded, state = self.rnn_core(
-          encoded_source_tokens[..., t, :, :], state)  # encoded: (B, N+1, F)
+          encoded_source_tokens[..., t, :, :], state)
       all_encoded_source_tokens.append(encoded)
-    encoded_source_tokens = jnp.stack(all_encoded_source_tokens, axis=-3)  # (B, Ts, N+1, F)
+    encoded_source_tokens = jnp.stack(all_encoded_source_tokens, axis=-3)
 
     # Encode target frames
-    num_target_tokens = target_with_cls.shape[-2]  # k+1
+    num_target_tokens = target_with_cls.shape[-2]
     target_with_cls = jnp.reshape(
         target_with_cls,
         (np.prod(b) * num_target_frames, num_target_tokens, target_tokens_d),
-    )  # (prod(B)*Tt, k+1, D)
-    encoded_targets = self.encoder(target_with_cls)  # (prod(B)*Tt, k+1, E)
+    )
+    encoded_targets = self.encoder(target_with_cls)
     encoded_targets = jnp.reshape(
         encoded_targets,
         b + [num_target_frames, num_target_tokens, encoded_targets.shape[-1]],
-    )  # (B, Tt, k+1, E)
+    )
 
     # Embed target tokens for decoder
-    embedded_target_tokens = self.decoder_embedder(encoded_targets)  # (B, Tt, k+1, C), C = decoder_emb_dim
+    embedded_target_tokens = self.decoder_embedder(encoded_targets)
 
     # Separate cls token
-    target_cls = embedded_target_tokens[..., 0:1, :]  # (B, Tt, 1, C)
-    unmasked_tokens = embedded_target_tokens[..., 1:, :]  # (B, Tt, k, C)
+    target_cls = embedded_target_tokens[..., 0:1, :]
+    unmasked_tokens = embedded_target_tokens[..., 1:, :]
 
     # Concat unmasked tokens with mask tokens and restore order
     mask_tokens = jnp.broadcast_to(
@@ -569,16 +569,16 @@ class VideoSiamMAE(nn.Module):
             inds_restore.shape[-2] - unmasked_tokens.shape[-2],
             self.mask_token.shape[-1],
         ],
-    )  # (B, Tt, N-k, C)
-    shuffled_tokens = jnp.concatenate([unmasked_tokens, mask_tokens], axis=-2)  # (B, Tt, N, C)
+    )
+    shuffled_tokens = jnp.concatenate([unmasked_tokens, mask_tokens], axis=-2)
     unshuffled_tokens = jnp.take_along_axis(
         shuffled_tokens, inds_restore, axis=-2
-    )  # (B, Tt, N, C)
+    )
 
     # Encode target deltas
     if self.delta_embedder is not None and target_deltas is not None:
-      target_deltas_onehot = jax.nn.one_hot(target_deltas, 64, axis=-1)  # (B, Tt, 64)
-      delta_tokens = self.delta_embedder(target_deltas_onehot)[..., jnp.newaxis, :]  # (B, Tt, 1, C)
+      target_deltas_onehot = jax.nn.one_hot(target_deltas, 64, axis=-1)
+      delta_tokens = self.delta_embedder(target_deltas_onehot)[..., jnp.newaxis, :]
     else:
       delta_tokens = None
 
@@ -587,28 +587,28 @@ class VideoSiamMAE(nn.Module):
         1, target_tokens_h, target_tokens_w,
         embedded_target_tokens.shape[-1],
     )
-    latent_posenc = self.latent_posenc(latent_posenc_shape)  # (1, h, w, C)
+    latent_posenc = self.latent_posenc(latent_posenc_shape)
     latent_posenc = jnp.reshape(
         latent_posenc,
         [1, 1, target_tokens_h * target_tokens_w, latent_posenc.shape[-1]],
-    )  # (1, 1, N, C)
-    latent_posenc = jnp.broadcast_to(latent_posenc, unshuffled_tokens.shape)  # (B, Tt, N, C)
+    )
+    latent_posenc = jnp.broadcast_to(latent_posenc, unshuffled_tokens.shape)
 
     if delta_tokens is not None:
-      unshuffled_tokens += delta_tokens  # broadcast over N
+      unshuffled_tokens += delta_tokens
     unshuffled_tokens += latent_posenc
-    to_decode = jnp.concatenate([target_cls, unshuffled_tokens], axis=-2)  # (B, Tt, N+1, C)
+    to_decode = jnp.concatenate([target_cls, unshuffled_tokens], axis=-2)
 
     # Prepare KV from encoded source tokens
     inputs_kv = einops.rearrange(
         encoded_source_tokens, '... T N D -> ... (T N) D'
-    )  # (B, Ts*(N+1), F)
-    inputs_kv = self.decoder_embedder(inputs_kv)  # (B, Ts*(N+1), C)
-    inputs_kv = inputs_kv[..., jnp.newaxis, :, :]  # (B, 1, Ts*(N+1), C)
-    inputs_kv = jnp.tile(inputs_kv, [num_target_frames, 1, 1])  # (B, Tt, Ts*(N+1), C)
+    )
+    inputs_kv = self.decoder_embedder(inputs_kv)
+    inputs_kv = inputs_kv[..., jnp.newaxis, :, :]
+    inputs_kv = jnp.tile(inputs_kv, [num_target_frames, 1, 1])
 
     # Decode
-    decoded = self.decoder(to_decode, inputs_kv=inputs_kv)  # (B, Tt, N+1, C)
+    decoded = self.decoder(to_decode, inputs_kv=inputs_kv)
 
     # Reshape back to image space
     reconstructed = jnp.reshape(
@@ -619,21 +619,20 @@ class VideoSiamMAE(nn.Module):
             target_tokens_w,
             decoded.shape[-1],
         ],
-    )  # (B, Tt, h, w, C)
+    )
     mask = jnp.reshape(
         mask, b + [num_target_frames, target_tokens_h, target_tokens_w, 1]
-    )  # (B, Tt, h, w, 1)
+    )
 
     # Detokenize to pixel space
-    reconstructed = self.detokenizer(reconstructed)  # (B, Tt, H, W, 3)
+    reconstructed = self.detokenizer(reconstructed)
 
     return {
-        'reconstructed': reconstructed,  # (B, Tt, H, W, 3)
-        'mask': mask,  # (B, Tt, h, w, 1)
-        'features': encoded_source_tokens,  # (B, Ts, N+1, F)
+        'reconstructed': reconstructed,
+        'mask': mask,
+        'features': encoded_source_tokens,
         'state': state,
-        'representation': decoded[..., 1:, :],  # (B, Tt, N, C)
-        'inds_restore': inds_restore
+        'representation': decoded[..., 1:, :]
     }
 
 

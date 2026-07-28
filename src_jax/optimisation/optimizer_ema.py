@@ -77,7 +77,7 @@ def build_optimizer(config: TrainerConfig, steps_per_epoch: int):
     return optax.chain(*chain), schedule
 
 
-def make_train_step(model, patch_size, masked_only, norm_pix):
+def make_train_step(model, ema_model, patch_size, masked_only, norm_pix):
     def train_step(state, batch, rng):
         mask_rng, state_rng, next_rng = jax.random.split(rng, 3)
 
@@ -92,15 +92,19 @@ def make_train_step(model, patch_size, masked_only, norm_pix):
                 method=model.reconstruct,
             )
             """
-                out  return {
-                        'reconstructed': reconstructed,
-                        'mask': mask,
-                        'features': encoded_source_tokens,
-                        'state': state,
-                        'representation': decoded[..., 1:, :]
-                    }
+                out      return {
+                    'reconstructed': reconstructed,  # (B, Tt, H, W, 3)
+                    'mask': mask,  # (B, Tt, h, w, 1)
+                    'features': encoded_source_tokens,  # (B, Ts, N+1, F)
+                    'state': state,
+                    'representation': decoded[..., 1:, :]  # (B, Tt, N, C)
+                }
                 so rather than optimising the pixel, optimise the masked patches. Representation has the output of all patches
             """
+
+            gt_out = ema_model.apply(
+                
+            )
             loss = rvm_loss(out, batch["target"], patch_size, masked_only, norm_pix)
             return loss, out
 
@@ -137,11 +141,13 @@ class Trainer:
         config: Optional[TrainerConfig] = None,
     ):
         self.model_config = model_config
+
         self.config = config or TrainerConfig()
         self.train_loader = train_loader
         self.eval_loader = eval_loader
 
         self.model = build_model(model_config)
+        
         self.patch_size = tuple(model_config.patch_size[-2:])
 
         self.checkpoint_dir = os.path.join(self.config.checkpoint_dir, f"exp_{time.time()}")

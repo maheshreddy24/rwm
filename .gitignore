@@ -1,7 +1,5 @@
-/wandb*
+/wandb* 
 *.npz
-*/__pycache__
-*.pyc
-*/ssv2/*
-
-20bn-something-something-v2-00
+k700_train_361.tar.gz
+*.tar.gz
+*.tar
