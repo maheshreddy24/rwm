@@ -671,42 +671,41 @@ def build_model(cfg: RVMConfig) -> VideoSiamMAE:
       cfg.frame_size[0] // cfg.patch_size[-2],
       cfg.frame_size[1] // cfg.patch_size[-1],
   )
-
-  return VideoSiamMAE(
-      tokenizer=Tokenizer(
-          patch_embedding=PatchEmbedding(
-              patch_size=list(cfg.patch_size), num_features=hidden_size
-          ),
-          posenc=SincosPosEmb(base_token_shape=list(base_token_shape)),
-      ),
-      encoder=Transformer.from_variant_str(cfg.variant, dtype=cfg.dtype),
-      rnn_core=GatedTransformerCore(
-          transformer=CrossAttentionTransformer(  
-              num_layers=cfg.core_layers,
-              num_heads=cfg.core_heads,
-              num_feats=hidden_size,
-              mlp_dim=core_mlp,
-              dtype=cfg.dtype,
-          ),
-          initializer=RandomStateInit(),
-          token_dim=hidden_size,
-          state_layer_norm=nn.LayerNorm(epsilon=1e-4, use_scale=True, use_bias=False),
-      ),
-      latent_emb_dim=hidden_size,
-      decoder=CrossAttentionTransformer(
-          num_layers=cfg.dec_layers,
-          num_heads=cfg.dec_heads,
-          num_feats=cfg.dec_dim,
-          mlp_dim=cfg.dec_mlp,
-          dtype=cfg.dtype,
-      ),
-      decoder_embedder=nn.Dense(cfg.dec_dim),
-      delta_embedder=nn.Dense(cfg.dec_dim),
-      latent_posenc=SincosPosEmb(),
-      detokenizer=Detokenizer(patch_size=tuple(cfg.patch_size[-2:]), num_features=3),
-      decoder_emb_dim=cfg.dec_dim,
-      masking_ratio=cfg.masking_ratio,
-  )
+  model_variant = 'S'
+  return  VideoSiamMAE(
+    tokenizer=Tokenizer(
+        patch_embedding=PatchEmbedding(patch_size=[1, 16, 16], num_features=384),  # confirmed by checkpoint: encoder dim 384
+        posenc=SincosPosEmb(base_token_shape=[16, 16]),
+    ),
+    encoder=Transformer.from_variant_str(variant_str=model_variant, dtype=jax.numpy.bfloat16),  # checkpoint confirms: 384 dim, 6 heads (kernel [384,6,64]), mlp 1536
+    rnn_core=GatedTransformerCore(
+        transformer=CrossAttentionTransformer(
+            num_layers=4,
+            num_heads=8,         # paper Table 5; if this errors, read true count off the error (see note)
+            num_feats=384,
+            mlp_dim=2048,        # ← THE FIX: checkpoint expects (384, 2048), flat value, not 4×dim
+            dtype=jax.numpy.bfloat16,
+        ),
+        initializer=RandomStateInit(),
+        token_dim=384,
+        state_layer_norm=nn.LayerNorm(epsilon=0.0001, use_scale=True, use_bias=False),
+    ),
+    latent_emb_dim=384,
+    # Decoder: fixed across all sizes — checkpoint confirms 512 dim, 16 heads (kernel [512,16,32]), mlp 2048
+    decoder=CrossAttentionTransformer(
+        num_layers=8,
+        num_heads=16,
+        num_feats=512,
+        mlp_dim=2048,
+        dtype=jax.numpy.bfloat16,
+    ),
+    decoder_embedder=nn.Dense(512),   # checkpoint confirms: kernel (384, 512)
+    delta_embedder=nn.Dense(512),     # checkpoint confirms: kernel (64, 512) — delta is 64-dim Fourier-embedded upstream
+    latent_posenc=SincosPosEmb(),
+    detokenizer=Detokenizer(patch_size=(16, 16), num_features=3),  # checkpoint confirms: (512, 768) = 16·16·3
+    decoder_emb_dim=512,
+    masking_ratio=0.85,
+)
 
 
 def patchify(imgs, patch_size):

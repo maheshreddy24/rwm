@@ -34,12 +34,12 @@ dataset:
     min_duration_sec: 4
 
 dataloader:
-  batch_size: 32
+  batch_size: 16
   num_workers: 4
 
 trainer:
   checkpoint_dir: checkpoints
-  init_params_path: /home/geometric-ssl/src/evals/ckpts/pretrain_rvm_small16_256_204031069.npz
+  init_params_path: /home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz
   lr: 1.5e-4
   weight_decay: 0.05
   betas: [0.9, 0.95]

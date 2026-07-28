@@ -10,4 +10,5 @@ seaborn
 flax
 decord
 einops
+wandb
 tqdm
