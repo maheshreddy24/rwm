@@ -19,14 +19,14 @@ model:
 #
 dataset:
   train:
-    video_csv: /home/geometric-ssl/dataset/somethingv2/20b_ssv2_train.csv
+    video_csv: /home/rvm/datasets/ssv2/train.csv
     num_source_frames: 4
     num_target_frames: 2
     max_delta: 64
     frame_size: [256, 256]
     min_duration_sec: 4
   eval:
-    video_csv: /home/geometric-ssl/dataset/somethingv2/20b_ssv2_test.csv
+    video_csv: /home/rvm/datasets/ssv2/test.csv
     num_source_frames: 4
     num_target_frames: 2
     max_delta: 64

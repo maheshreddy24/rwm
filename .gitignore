@@ -1,1 +1,7 @@
 /wandb*
+*.npz
+*/__pycache__
+*.pyc
+*/ssv2/*
+
+20bn-something-something-v2-00

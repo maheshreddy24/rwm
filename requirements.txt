@@ -1,0 +1,13 @@
+
+icecream
+jax[cuda12]
+tensorflow
+scikit-learn
+matplotlib
+opencv-python
+mediapy
+seaborn
+flax
+decord
+einops
+tqdm
