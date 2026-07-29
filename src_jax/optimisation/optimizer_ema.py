@@ -92,12 +92,13 @@ def make_train_step(model, ema_model, patch_size, masked_only, norm_pix):
                 method=model.reconstruct,
             )
             """
-                out      return {
+                out      {
                     'reconstructed': reconstructed,  # (B, Tt, H, W, 3)
                     'mask': mask,  # (B, Tt, h, w, 1)
                     'features': encoded_source_tokens,  # (B, Ts, N+1, F)
                     'state': state,
-                    'representation': decoded[..., 1:, :]  # (B, Tt, N, C)
+                    'representation': decoded[..., 1:, :],   # (B, Tt, N, C)
+                    'masked_indices': tokens_mask #mask: Binary mask (1 = masked, 0 = visible) in original order.
                 }
                 so rather than optimising the pixel, optimise the masked patches. Representation has the output of all patches
             """
