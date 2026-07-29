@@ -439,6 +439,7 @@ class VideoSiamMAE(nn.Module):
   tokenizer: nn.Module
   encoder: nn.Module
   rnn_core: nn.Module
+  decoder_proj: nn.Module 
   latent_emb_dim: int = 384
 
   # Decoder
@@ -449,6 +450,7 @@ class VideoSiamMAE(nn.Module):
   detokenizer: nn.Module | None = None
   decoder_emb_dim: int = 512
   masking_ratio: float = 0.95
+
 
   def setup(self):
     self.cls_token = self.param('cls_token', nn.initializers.normal(stddev=0.02), (1, self.latent_emb_dim))
@@ -637,16 +639,28 @@ class VideoSiamMAE(nn.Module):
     # Detokenize to pixel space
     reconstructed = self.detokenizer(reconstructed)  # (B, Tt, H, W, 3)
 
+    representation = self.decoder_proj(decoded[..., 1:, :])
     return {
         'reconstructed': reconstructed,  # (B, Tt, H, W, 3)
         'mask': mask,  # (B, Tt, h, w, 1)
         'features': encoded_source_tokens,  # (B, Ts, N+1, F)
         'state': state,
-        'representation': decoded[..., 1:, :],   # (B, Tt, N, C)
+        'representation': representation,   # (B, Tt, N, C)
         'masked_indices': tokens_mask #mask: Binary mask (1 = masked, 0 = visible) in original order.
     }
 
-
+  # we will use this method for the ema mdoels, we want the representation after the encoding
+  # as we need to pass the params, it will run with those new params.
+  def encode_target(self, frames):
+    """Full (unmasked) frames -> patch tokens, no RNN core. (B, Tt, N, E)"""
+    t = self.tokenizer(frames)
+    t = einops.rearrange(t, '... h w D -> ... (h w) D')
+    *b, _, _ = t.shape
+    cls = jnp.broadcast_to(self.cls_token, b + [1, self.cls_token.shape[-1]])
+    t = jnp.concatenate([cls, t], axis=-2)
+    encoder_emb = self.encoder(t)[..., 1:, :]
+    # return self.decoder_proj(encoder_emb)
+    return encoder_emb
 
 
 @dataclasses.dataclass(frozen=True)
@@ -715,6 +729,7 @@ def build_model(cfg: RVMConfig) -> VideoSiamMAE:
     detokenizer=Detokenizer(patch_size=(16, 16), num_features=3),  # checkpoint confirms: (512, 768) = 16·16·3
     decoder_emb_dim=512,
     masking_ratio=0.85,
+    decoder_proj = DecoderProj(encoder_dim = 384, hidden_dim = None) # this is to match the decoder embedding dim to encoder embedding dim, 
 )
 
 

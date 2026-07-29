@@ -3,3 +3,7 @@
 k700_train_361.tar.gz
 *.tar.gz
 *.tar
+*.mp4
+
+*/ssv2/*
+20bn*

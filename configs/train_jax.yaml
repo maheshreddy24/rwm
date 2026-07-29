@@ -1,5 +1,6 @@
 seed: 42
-
+decoder_emb_dim: 512
+encoder_emb_dim: 384
 model:
   variant: S
   patch_size: [1, 16, 16]
