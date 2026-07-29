@@ -734,6 +734,7 @@ def build_model(cfg: RVMConfig) -> VideoSiamMAE:
 
 
 
+
 def patchify(imgs, patch_size):
   """(..., H, W, C) -> (..., H//ph, W//pw, ph*pw*C), inverse of `Detokenizer`/`unpatchify`."""
   ph, pw = patch_size
