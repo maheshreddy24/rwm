@@ -4,6 +4,7 @@ import time
 from collections.abc import Mapping
 from typing import Any, Optional
 
+import flax
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -14,7 +15,7 @@ from flax.training import train_state
 from PIL import Image
 from tqdm import tqdm
 
-from src_jax.models.rvm_jax import RVMConfig, build_model, patchify, unpatchify
+from src_jax.models.rvm_jax import RVMConfig, build_model, patchify, rvm_loss, unpatchify
 from src_jax.optimisation.config import TrainerConfig
 
 
@@ -22,6 +23,11 @@ class TrainState(train_state.TrainState):
     """Adds an EMA copy of the params, updated outside the optimizer/gradient path."""
 
     ema_params: Any
+
+
+# --------------------------------------------------------------------------------------
+# batch / pytree helpers
+# --------------------------------------------------------------------------------------
 
 
 def _to_numpy_batch(batch):
@@ -33,17 +39,10 @@ def _to_numpy_batch(batch):
     }
 
 
-def _tree_shapes(tree) -> dict:
-    """Plain-dict-of-shapes view of a params pytree, robust to dict vs. FrozenDict nodes."""
-    if isinstance(tree, Mapping):
-        return {k: _tree_shapes(v) for k, v in tree.items()}
-    return tuple(jnp.shape(tree))
-
-
 def load_pretrained_params(path: str) -> dict:
-    """Load a Flax params pytree saved as a flat "/"-joined-key .npz (see recover_tree)."""
+    """Load a Flax params pytree saved as a flat "/"-joined-key .npz."""
     flat = np.load(path, allow_pickle=False)
-    tree = {}
+    tree: dict = {}
     for key in flat.files:
         parts = key.split("/")
         node = tree
@@ -53,8 +52,45 @@ def load_pretrained_params(path: str) -> dict:
     return tree
 
 
+def merge_params(init_p, ckpt_p, _prefix=()):
+    """Checkpoint values win; freshly-initialized values fill the gaps.
+
+    The pretrained checkpoint predates `decoder_proj`, so those leaves keep their
+    random init. Any *other* fresh leaf means `build_model` has drifted from the
+    checkpoint's architecture -- surfaced by the caller rather than swallowed here.
+    """
+    out = {}
+    for k, v in flax.core.unfreeze(init_p).items():
+        path = _prefix + (k,)
+        if k not in ckpt_p:
+            out[k] = v
+        elif isinstance(v, Mapping):
+            out[k] = merge_params(v, ckpt_p[k], path)
+        else:
+            c = jnp.asarray(ckpt_p[k])
+            if c.shape != jnp.shape(v):
+                raise ValueError(
+                    f"{'/'.join(path)}: checkpoint {c.shape} vs model {jnp.shape(v)}"
+                )
+            out[k] = c
+    return out
+
+
+def _leaf_paths(p, prefix=()):
+    for k, v in flax.core.unfreeze(p).items():
+        if isinstance(v, Mapping):
+            yield from _leaf_paths(v, prefix + (k,))
+        else:
+            yield prefix + (k,)
+
+
+# --------------------------------------------------------------------------------------
+# optimizer
+# --------------------------------------------------------------------------------------
+
+
 def build_schedule(config: TrainerConfig, steps_per_epoch: int) -> optax.Schedule:
-    """Linear warmup -> cosine decay to `min_lr`, matching `src/optimisation/optimizer.py`."""
+    """Linear warmup -> cosine decay to `min_lr`."""
     total_steps = max(steps_per_epoch * int(config.num_epochs), 1)
     return optax.warmup_cosine_decay_schedule(
         init_value=0.0,
@@ -89,23 +125,48 @@ def ema_update(ema_params, params, momentum):
     )
 
 
-def representation_loss(out, target_repr):
+# --------------------------------------------------------------------------------------
+# losses
+# --------------------------------------------------------------------------------------
+
+
+def representation_loss(out, target_repr, eps=1e-6):
     """Masked MSE between the student's per-patch representation and the EMA target.
 
-    `out['representation']` (B, Tt, N, C) is the decoder's prediction for every patch,
-    projected back to encoder_dim by `decoder_proj`. `out['masked_indices']` (B, Tt, N, 1)
-    is 1 for masked/dropped patches (see `random_masking`), 0 for patches the encoder
-    already saw directly -- so, like MAE/SiamMAE's pixel loss, only masked patches count.
+    `out['representation']` (B, Tt, N, E) is the decoder's prediction for every patch,
+    projected from decoder_emb_dim back to encoder_dim by `decoder_proj`.
+    `out['masked_indices']` (B, Tt, N, 1) is 1 for masked/dropped patches, so -- as in
+    MAE/SiamMAE's pixel loss -- only patches the encoder never saw contribute.
+
+    Targets are instance-normalized over the feature dim (data2vec-style). This is not
+    optional: without it the constant solution is trivially reachable and the loss curve
+    will look healthy while the encoder collapses.
+
+    Returns:
+      (loss, target_std) where target_std is the mean per-dimension std of the
+      *pre-normalization* targets -- the collapse monitor.
     """
     pred = out["representation"].astype(jnp.float32)
-    target_repr = target_repr.astype(jnp.float32)
+    tgt = target_repr.astype(jnp.float32)
+
+    mu = tgt.mean(axis=-1, keepdims=True)
+    var = tgt.var(axis=-1, keepdims=True)
+    tgt_n = (tgt - mu) * jax.lax.rsqrt(var + eps)
+
     mask = out["masked_indices"]  # (B, Tt, N, 1)
+    per_token = jnp.mean((pred - tgt_n) ** 2, axis=-1, keepdims=True)
+    loss = jnp.sum(per_token * mask) / jnp.clip(jnp.sum(mask), min=1.0)
 
-    per_token_mse = jnp.mean((pred - target_repr) ** 2, axis=-1, keepdims=True)
-    return jnp.sum(per_token_mse * mask) / jnp.clip(jnp.sum(mask), min=1.0)
+    tgt_std = jnp.mean(jnp.std(tgt.reshape(-1, tgt.shape[-1]), axis=0))
+    return loss, tgt_std
 
 
-def make_train_step(model, ema_momentum, ema_update_every):
+# --------------------------------------------------------------------------------------
+# steps
+# --------------------------------------------------------------------------------------
+
+
+def make_train_step(model, ema_momentum, patch_size, pixel_weight, norm_pix):
     def train_step(state, batch, rng):
         mask_rng, state_rng, next_rng = jax.random.split(rng, 3)
 
@@ -126,25 +187,43 @@ def make_train_step(model, ema_momentum, ema_update_every):
                     method=model.encode_target,
                 )
             )
-            loss = representation_loss(out, target_repr)
-            return loss, out
+            repr_loss, tgt_std = representation_loss(out, target_repr)
 
-        (loss, _), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
+            if pixel_weight > 0.0:
+                pix_loss = rvm_loss(
+                    out,
+                    batch["target"],
+                    patch_size,
+                    masked_only=True,
+                    norm_pix=norm_pix,
+                )
+            else:
+                pix_loss = jnp.zeros((), jnp.float32)
+
+            total = repr_loss + pixel_weight * pix_loss
+            return total, (repr_loss, pix_loss, tgt_std)
+
+        (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
+        repr_loss, pix_loss, tgt_std = aux
+
         state = state.apply_gradients(grads=grads)
-
-        updated_ema = ema_update(state.ema_params, state.params, ema_momentum)
-        should_update = (state.step % ema_update_every) == 0
-        new_ema_params = jax.tree_util.tree_map(
-            lambda new, old: jnp.where(should_update, new, old), updated_ema, state.ema_params
+        state = state.replace(
+            ema_params=ema_update(state.ema_params, state.params, ema_momentum)
         )
-        state = state.replace(ema_params=new_ema_params)
 
-        return state, loss, next_rng
+        metrics = {
+            "loss": loss,
+            "repr_loss": repr_loss,
+            "pixel_loss": pix_loss,
+            "target_std": tgt_std,
+            "grad_norm": optax.global_norm(grads),
+        }
+        return state, metrics, next_rng
 
     return jax.jit(train_step)
 
 
-def make_eval_step(model):
+def make_eval_step(model, patch_size, pixel_weight, norm_pix):
     def eval_step(params, ema_params, batch, rng):
         mask_rng, state_rng = jax.random.split(rng)
         out = model.apply(
@@ -159,9 +238,28 @@ def make_eval_step(model):
         target_repr = model.apply(
             {"params": ema_params}, batch["target"], method=model.encode_target
         )
-        return representation_loss(out, target_repr)
+        repr_loss, tgt_std = representation_loss(out, target_repr)
+
+        if pixel_weight > 0.0:
+            pix_loss = rvm_loss(
+                out, batch["target"], patch_size, masked_only=True, norm_pix=norm_pix
+            )
+        else:
+            pix_loss = jnp.zeros((), jnp.float32)
+
+        return {
+            "loss": repr_loss + pixel_weight * pix_loss,
+            "repr_loss": repr_loss,
+            "pixel_loss": pix_loss,
+            "target_std": tgt_std,
+        }
 
     return jax.jit(eval_step)
+
+
+# --------------------------------------------------------------------------------------
+# trainer
+# --------------------------------------------------------------------------------------
 
 
 class Trainer:
@@ -173,14 +271,15 @@ class Trainer:
         config: Optional[TrainerConfig] = None,
     ):
         self.model_config = model_config
-
         self.config = config or TrainerConfig()
         self.train_loader = train_loader
         self.eval_loader = eval_loader
 
         self.model = build_model(model_config)
-        
         self.patch_size = tuple(model_config.patch_size[-2:])
+
+        self.pixel_weight = float(getattr(self.config, "pixel_weight", 1.0))
+        self.norm_pix = bool(getattr(self.config, "norm_pix", False))
 
         self.checkpoint_dir = os.path.join(self.config.checkpoint_dir, f"exp_{time.time()}")
         os.makedirs(self.checkpoint_dir, exist_ok=True)
@@ -195,9 +294,12 @@ class Trainer:
 
         self._init_state()
 
+    # -- setup -------------------------------------------------------------------------
+
     def _init_state(self):
         self.rng, init_rng, state_rng = jax.random.split(self.rng, 3)
         first_batch = _to_numpy_batch(next(iter(self.train_loader)))
+
         params = self.model.init(
             {"params": init_rng, "default": state_rng},
             first_batch["source"],
@@ -206,18 +308,9 @@ class Trainer:
             rng_key=state_rng,
             method=self.model.reconstruct,
         )["params"]
+
         if self.config.init_params_path is not None:
-            pretrained = load_pretrained_params(self.config.init_params_path)
-            init_shapes = _tree_shapes(params)
-            pretrained_shapes = _tree_shapes(pretrained)
-            if init_shapes != pretrained_shapes:
-                raise ValueError(
-                    f"pretrained params at {self.config.init_params_path} don't match "
-                    f"model_config's param tree (mismatched keys/shapes):\n"
-                    f"expected: {init_shapes}\ngot: {pretrained_shapes}"
-                )
-            params = pretrained
-            print(f"initialized params from {self.config.init_params_path}")
+            params = self._load_and_merge(params)
 
         n_params = sum(x.size for x in jax.tree_util.tree_leaves(params))
         print(f"model params: {n_params / 1e6:.1f}M")
@@ -226,16 +319,21 @@ class Trainer:
         ema_params = jax.tree_util.tree_map(jnp.array, params)
 
         steps_per_epoch = len(self.train_loader)
-        #! check this
         tx, self.schedule = build_optimizer(self.config, steps_per_epoch)
         self.state = TrainState.create(
             apply_fn=self.model.apply, params=params, tx=tx, ema_params=ema_params
         )
 
         self.train_step_fn = make_train_step(
-            self.model, float(self.config.ema_momentum), int(self.config.ema_update_every)
+            self.model,
+            float(self.config.ema_momentum),
+            self.patch_size,
+            self.pixel_weight,
+            self.norm_pix,
         )
-        self.eval_step_fn = make_eval_step(self.model)
+        self.eval_step_fn = make_eval_step(
+            self.model, self.patch_size, self.pixel_weight, self.norm_pix
+        )
 
         wandb_config = dataclasses.asdict(self.config) | {
             **dataclasses.asdict(self.model_config),
@@ -244,6 +342,36 @@ class Trainer:
         wandb.init(
             project=self.config.wandb_project, name=self.config.wandb_name, config=wandb_config
         )
+
+    def _load_and_merge(self, init_params):
+        """Fill from the pretrained checkpoint; `decoder_proj` stays randomly initialized."""
+        pretrained = load_pretrained_params(self.config.init_params_path)
+        merged = merge_params(init_params, pretrained)
+
+        ckpt_keys = set(_leaf_paths(pretrained))
+        model_keys = set(_leaf_paths(merged))
+
+        orphaned = ckpt_keys - model_keys
+        if orphaned:
+            raise ValueError(
+                f"checkpoint leaves unused by the model -- build_model has drifted from "
+                f"the checkpoint architecture: {sorted(orphaned)}"
+            )
+
+        fresh = model_keys - ckpt_keys
+        expected_fresh = {p for p in fresh if p[0] == "decoder_proj"}
+        if fresh != expected_fresh:
+            raise ValueError(
+                f"unexpected randomly-initialized leaves: {sorted(fresh - expected_fresh)}"
+            )
+
+        print(
+            f"initialized from {self.config.init_params_path}; "
+            f"fresh: {sorted('/'.join(p) for p in fresh)}"
+        )
+        return merged
+
+    # -- checkpointing -----------------------------------------------------------------
 
     def save_checkpoint(self):
         ckpt = {
@@ -279,21 +407,33 @@ class Trainer:
         self.global_step = int(latest)
         return True
 
+    # -- training ----------------------------------------------------------------------
+
     def train(self, num_epochs: Optional[int] = None):
         num_epochs = num_epochs or int(self.config.num_epochs)
         for _ in tqdm(range(num_epochs), total=num_epochs, leave=False):
             for batch in tqdm(self.train_loader, total=len(self.train_loader), leave=True):
-                loss = self._train_step(batch)
+                metrics = self._train_step(batch)
                 self.global_step += 1
+
                 if self.global_step % int(self.config.log_interval) == 0:
                     lr = float(self.schedule(self.state.step))
-                    print(f"epoch {self.epoch} step {self.global_step} loss {loss:.4f} lr {lr:.2e}")
+                    print(
+                        f"epoch {self.epoch} step {self.global_step} "
+                        f"loss {metrics['loss']:.4f} repr {metrics['repr_loss']:.4f} "
+                        f"pix {metrics['pixel_loss']:.4f} tgt_std {metrics['target_std']:.4f} "
+                        f"lr {lr:.2e}"
+                    )
                     wandb.log(
-                        {"train/loss": loss, "train/lr": lr, "epoch": self.epoch},
+                        {f"train/{k}": v for k, v in metrics.items()}
+                        | {"train/lr": lr, "epoch": self.epoch},
                         step=self.global_step,
                     )
 
-                if self.eval_loader is not None and self.global_step % int(self.config.eval_interval) == 0:
+                if (
+                    self.eval_loader is not None
+                    and self.global_step % int(self.config.eval_interval) == 0
+                ):
                     self._evaluate_and_log()
 
             self.epoch += 1
@@ -304,33 +444,45 @@ class Trainer:
 
     def _train_step(self, batch):
         batch = _to_numpy_batch(batch)
-        self.state, loss, self.rng = self.train_step_fn(self.state, batch, self.rng)
-        return float(loss)
+        self.state, metrics, self.rng = self.train_step_fn(self.state, batch, self.rng)
+        return {k: float(v) for k, v in metrics.items()}
+
+    # -- evaluation --------------------------------------------------------------------
 
     def _evaluate_and_log(self):
-        eval_loss = self.eval()
-        print(f"epoch {self.epoch} step {self.global_step} eval_loss {eval_loss:.4f}")
-        wandb.log({"eval/loss": eval_loss, "epoch": self.epoch}, step=self.global_step)
+        metrics = self.eval()
+        print(
+            f"epoch {self.epoch} step {self.global_step} "
+            f"eval_loss {metrics['loss']:.4f} tgt_std {metrics['target_std']:.4f}"
+        )
+        wandb.log(
+            {f"eval/{k}": v for k, v in metrics.items()} | {"epoch": self.epoch},
+            step=self.global_step,
+        )
         self._save_reconstruction_visualization()
 
     def eval(self):
-        total_loss, n_batches = 0.0, 0
+        totals: dict[str, float] = {}
+        n_batches = 0
         rng = jax.random.PRNGKey(0)
         for batch in self.eval_loader:
             batch = _to_numpy_batch(batch)
             rng, step_rng = jax.random.split(rng)
-            loss = self.eval_step_fn(self.state.params, self.state.ema_params, batch, step_rng)
-            total_loss += float(loss)
+            metrics = self.eval_step_fn(
+                self.state.params, self.state.ema_params, batch, step_rng
+            )
+            for k, v in metrics.items():
+                totals[k] = totals.get(k, 0.0) + float(v)
             n_batches += 1
-        return total_loss / max(n_batches, 1)
+        return {k: v / max(n_batches, 1) for k, v in totals.items()}
 
     def _save_reconstruction_visualization(self):
         """Ground-truth frame next to its full reconstruction, side by side.
 
         `out['reconstructed']` is already pixel-scale (the `Detokenizer` decodes it
-        directly), so unlike the PyTorch trainer there's no unpatchify step -- except
-        when `norm_pix` is on, where the head regresses normalized patches and we have
-        to undo that with the ground-truth patch stats before viewing it as pixels.
+        directly), so there's no unpatchify step -- except when `norm_pix` is on, where
+        the head regresses normalized patches and we undo that with the ground-truth
+        patch statistics before viewing it as pixels.
         """
         if self.eval_loader is None:
             return
@@ -348,10 +500,10 @@ class Trainer:
             method=self.model.reconstruct,
         )
 
-        gt_img = jnp.asarray(batch["target"][0:1, 0:1])           # (1, 1, H, W, 3)
+        gt_img = jnp.asarray(batch["target"][0:1, 0:1])  # (1, 1, H, W, 3)
         pred_img = out["reconstructed"][0:1, 0:1].astype(jnp.float32)
 
-        if self.config.norm_pix:
+        if self.norm_pix:
             gt_patches = patchify(gt_img, self.patch_size)
             mu = gt_patches.mean(axis=-1, keepdims=True)
             var = gt_patches.var(axis=-1, keepdims=True)

@@ -729,8 +729,9 @@ def build_model(cfg: RVMConfig) -> VideoSiamMAE:
     detokenizer=Detokenizer(patch_size=(16, 16), num_features=3),  # checkpoint confirms: (512, 768) = 16·16·3
     decoder_emb_dim=512,
     masking_ratio=0.85,
-    decoder_proj = DecoderProj(encoder_dim = 384, hidden_dim = None) # this is to match the decoder embedding dim to encoder embedding dim, 
+    decoder_proj = DecoderProj(encoder_dim = 384, hidden_dim = None)
 )
+
 
 
 def patchify(imgs, patch_size):
