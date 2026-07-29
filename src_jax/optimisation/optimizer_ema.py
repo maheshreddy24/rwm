@@ -2,7 +2,7 @@ import dataclasses
 import os
 import time
 from collections.abc import Mapping
-from typing import Optional
+from typing import Any, Optional
 
 import jax
 import jax.numpy as jnp
@@ -14,8 +14,14 @@ from flax.training import train_state
 from PIL import Image
 from tqdm import tqdm
 
-from src_jax.models.rvm_jax import RVMConfig, build_model, patchify, unpatchify, rvm_loss
+from src_jax.models.rvm_jax import RVMConfig, build_model, patchify, unpatchify
 from src_jax.optimisation.config import TrainerConfig
+
+
+class TrainState(train_state.TrainState):
+    """Adds an EMA copy of the params, updated outside the optimizer/gradient path."""
+
+    ema_params: Any
 
 
 def _to_numpy_batch(batch):
@@ -50,11 +56,10 @@ def load_pretrained_params(path: str) -> dict:
 def build_schedule(config: TrainerConfig, steps_per_epoch: int) -> optax.Schedule:
     """Linear warmup -> cosine decay to `min_lr`, matching `src/optimisation/optimizer.py`."""
     total_steps = max(steps_per_epoch * int(config.num_epochs), 1)
-    warmup_steps = steps_per_epoch * int(config.warmup_epochs)
     return optax.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=float(config.lr),
-        warmup_steps=warmup_steps,
+        warmup_steps=int(config.warmup_steps),
         decay_steps=total_steps,
         end_value=float(config.min_lr),
     )
@@ -77,7 +82,30 @@ def build_optimizer(config: TrainerConfig, steps_per_epoch: int):
     return optax.chain(*chain), schedule
 
 
-def make_train_step(model, ema_model, patch_size, masked_only, norm_pix):
+def ema_update(ema_params, params, momentum):
+    """`ema = momentum * ema + (1 - momentum) * params`, applied leaf-wise."""
+    return jax.tree_util.tree_map(
+        lambda e, p: momentum * e + (1.0 - momentum) * p, ema_params, params
+    )
+
+
+def representation_loss(out, target_repr):
+    """Masked MSE between the student's per-patch representation and the EMA target.
+
+    `out['representation']` (B, Tt, N, C) is the decoder's prediction for every patch,
+    projected back to encoder_dim by `decoder_proj`. `out['masked_indices']` (B, Tt, N, 1)
+    is 1 for masked/dropped patches (see `random_masking`), 0 for patches the encoder
+    already saw directly -- so, like MAE/SiamMAE's pixel loss, only masked patches count.
+    """
+    pred = out["representation"].astype(jnp.float32)
+    target_repr = target_repr.astype(jnp.float32)
+    mask = out["masked_indices"]  # (B, Tt, N, 1)
+
+    per_token_mse = jnp.mean((pred - target_repr) ** 2, axis=-1, keepdims=True)
+    return jnp.sum(per_token_mse * mask) / jnp.clip(jnp.sum(mask), min=1.0)
+
+
+def make_train_step(model, ema_momentum, ema_update_every):
     def train_step(state, batch, rng):
         mask_rng, state_rng, next_rng = jax.random.split(rng, 3)
 
@@ -91,33 +119,33 @@ def make_train_step(model, ema_model, patch_size, masked_only, norm_pix):
                 rngs={"default": state_rng},
                 method=model.reconstruct,
             )
-            """
-                out      {
-                    'reconstructed': reconstructed,  # (B, Tt, H, W, 3)
-                    'mask': mask,  # (B, Tt, h, w, 1)
-                    'features': encoded_source_tokens,  # (B, Ts, N+1, F)
-                    'state': state,
-                    'representation': decoded[..., 1:, :],   # (B, Tt, N, C)
-                    'masked_indices': tokens_mask #mask: Binary mask (1 = masked, 0 = visible) in original order.
-                }
-                so rather than optimising the pixel, optimise the masked patches. Representation has the output of all patches
-            """
-
-            gt_out = ema_model.apply(
-                
+            target_repr = jax.lax.stop_gradient(
+                model.apply(
+                    {"params": state.ema_params},
+                    batch["target"],
+                    method=model.encode_target,
+                )
             )
-            loss = rvm_loss(out, batch["target"], patch_size, masked_only, norm_pix)
+            loss = representation_loss(out, target_repr)
             return loss, out
 
         (loss, _), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
         state = state.apply_gradients(grads=grads)
+
+        updated_ema = ema_update(state.ema_params, state.params, ema_momentum)
+        should_update = (state.step % ema_update_every) == 0
+        new_ema_params = jax.tree_util.tree_map(
+            lambda new, old: jnp.where(should_update, new, old), updated_ema, state.ema_params
+        )
+        state = state.replace(ema_params=new_ema_params)
+
         return state, loss, next_rng
 
     return jax.jit(train_step)
 
 
-def make_eval_step(model, patch_size, masked_only, norm_pix):
-    def eval_step(params, batch, rng):
+def make_eval_step(model):
+    def eval_step(params, ema_params, batch, rng):
         mask_rng, state_rng = jax.random.split(rng)
         out = model.apply(
             {"params": params},
@@ -128,7 +156,10 @@ def make_eval_step(model, patch_size, masked_only, norm_pix):
             rngs={"default": state_rng},
             method=model.reconstruct,
         )
-        return rvm_loss(out, batch["target"], patch_size, masked_only, norm_pix)
+        target_repr = model.apply(
+            {"params": ema_params}, batch["target"], method=model.encode_target
+        )
+        return representation_loss(out, target_repr)
 
     return jax.jit(eval_step)
 
@@ -191,20 +222,20 @@ class Trainer:
         n_params = sum(x.size for x in jax.tree_util.tree_leaves(params))
         print(f"model params: {n_params / 1e6:.1f}M")
 
+        # EMA target encoder starts as an exact copy of the (pretrained) params.
+        ema_params = jax.tree_util.tree_map(jnp.array, params)
+
         steps_per_epoch = len(self.train_loader)
         #! check this
         tx, self.schedule = build_optimizer(self.config, steps_per_epoch)
-        # in jax we need a train state I belive.
-        self.state = train_state.TrainState.create(
-            apply_fn=self.model.apply, params=params, tx=tx
+        self.state = TrainState.create(
+            apply_fn=self.model.apply, params=params, tx=tx, ema_params=ema_params
         )
 
         self.train_step_fn = make_train_step(
-            self.model, self.patch_size, self.config.masked_only, self.config.norm_pix
+            self.model, float(self.config.ema_momentum), int(self.config.ema_update_every)
         )
-        self.eval_step_fn = make_eval_step(
-            self.model, self.patch_size, self.config.masked_only, self.config.norm_pix
-        )
+        self.eval_step_fn = make_eval_step(self.model)
 
         wandb_config = dataclasses.asdict(self.config) | {
             **dataclasses.asdict(self.model_config),
@@ -217,6 +248,7 @@ class Trainer:
     def save_checkpoint(self):
         ckpt = {
             "params": self.state.params,
+            "ema_params": self.state.ema_params,
             "opt_state": self.state.opt_state,
             "step": self.state.step,
             "epoch": self.epoch,
@@ -231,13 +263,17 @@ class Trainer:
             return False
         target = {
             "params": self.state.params,
+            "ema_params": self.state.ema_params,
             "opt_state": self.state.opt_state,
             "step": self.state.step,
             "epoch": self.epoch,
         }
         restored = self.ckpt_mgr.restore(latest, args=ocp.args.StandardRestore(target))
         self.state = self.state.replace(
-            params=restored["params"], opt_state=restored["opt_state"], step=restored["step"]
+            params=restored["params"],
+            ema_params=restored["ema_params"],
+            opt_state=restored["opt_state"],
+            step=restored["step"],
         )
         self.epoch = int(restored["epoch"])
         self.global_step = int(latest)
@@ -283,7 +319,7 @@ class Trainer:
         for batch in self.eval_loader:
             batch = _to_numpy_batch(batch)
             rng, step_rng = jax.random.split(rng)
-            loss = self.eval_step_fn(self.state.params, batch, step_rng)
+            loss = self.eval_step_fn(self.state.params, self.state.ema_params, batch, step_rng)
             total_loss += float(loss)
             n_batches += 1
         return total_loss / max(n_batches, 1)

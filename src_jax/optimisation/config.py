@@ -13,7 +13,7 @@ class TrainerConfig:
     """
 
     # runtime
-    checkpoint_dir: str = "checkpoints"
+    checkpoint_dir: str = "checkpoints_ema_jax"
     seed: Optional[int] = None
     init_params_path: Optional[str] = None  # .npz of pretrained params (see optimizer.load_pretrained_params)
 
@@ -25,13 +25,18 @@ class TrainerConfig:
     grad_clip_norm: Optional[float] = 1.0
 
     # schedule: linear warmup -> cosine decay, stepped every optimizer step
-    num_epochs: int = 100
-    warmup_epochs: int = 5
+    num_epochs: int = 2
+    warmup_steps: int = 500
     min_lr: float = 1e-6
 
     # loss -- kwargs forwarded to rvm_loss(); paper default is plain L2 over all pixels
     masked_only: bool = False
     norm_pix: bool = False
+
+    # EMA target encoder (optimizer_ema.py only): momentum update `ema = m*ema + (1-m)*params`,
+    # applied every `ema_update_every` optimizer steps.
+    ema_momentum: float = 0.998
+    ema_update_every: int = 1
 
     # misc
     log_interval: int = 50

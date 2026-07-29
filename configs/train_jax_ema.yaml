@@ -15,9 +15,6 @@ model:
   max_delta: 64
   dtype: bfloat16
 
-# train_csv = "/home/geometric-ssl/dataset/somethingv2/20b_ssv2_train.csv"
-# test_csv = "/home/geometric-ssl/dataset/somethingv2/20b_ssv2_test.csv"
-#
 dataset:
   train:
     video_csv: /home/rvm/datasets/ssv2/train.csv
@@ -39,16 +36,17 @@ dataloader:
   num_workers: 4
 
 trainer:
-  checkpoint_dir: checkpoints
+  checkpoint_dir: checkpoints_ema_jax
   init_params_path: /home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz
   lr: 1.5e-4
   weight_decay: 0.05
   betas: [0.9, 0.95]
   eps: 1e-8
   grad_clip_norm: 1.0
-  num_epochs: 100
-  warmup_steps: 2000
+  num_epochs: 2
+  warmup_steps: 500
   min_lr: 1e-6
-  masked_only: false
   norm_pix: false
+  ema_momentum: 0.998
+  ema_update_every: 1
   log_interval: 100

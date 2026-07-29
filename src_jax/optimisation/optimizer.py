@@ -50,11 +50,10 @@ def load_pretrained_params(path: str) -> dict:
 def build_schedule(config: TrainerConfig, steps_per_epoch: int) -> optax.Schedule:
     """Linear warmup -> cosine decay to `min_lr`, matching `src/optimisation/optimizer.py`."""
     total_steps = max(steps_per_epoch * int(config.num_epochs), 1)
-    warmup_steps = steps_per_epoch * int(config.warmup_epochs)
     return optax.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=float(config.lr),
-        warmup_steps=warmup_steps,
+        warmup_steps=int(config.warmup_steps),
         decay_steps=total_steps,
         end_value=float(config.min_lr),
     )
