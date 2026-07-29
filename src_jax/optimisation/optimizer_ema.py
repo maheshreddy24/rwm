@@ -15,7 +15,7 @@ from flax.training import train_state
 from PIL import Image
 from tqdm import tqdm
 
-from src_jax.models.rvm_jax import RVMConfig, build_model, patchify, rvm_loss, unpatchify
+from src_jax.models.rvm_jax import RVMConfig, build_model
 from src_jax.optimisation.config import TrainerConfig
 
 
@@ -23,11 +23,6 @@ class TrainState(train_state.TrainState):
     """Adds an EMA copy of the params, updated outside the optimizer/gradient path."""
 
     ema_params: Any
-
-
-# --------------------------------------------------------------------------------------
-# batch / pytree helpers
-# --------------------------------------------------------------------------------------
 
 
 def _to_numpy_batch(batch):
@@ -56,8 +51,8 @@ def merge_params(init_p, ckpt_p, _prefix=()):
     """Checkpoint values win; freshly-initialized values fill the gaps.
 
     The pretrained checkpoint predates `decoder_proj`, so those leaves keep their
-    random init. Any *other* fresh leaf means `build_model` has drifted from the
-    checkpoint's architecture -- surfaced by the caller rather than swallowed here.
+    random init. Any other fresh leaf means `build_model` has drifted from the
+    checkpoint's architecture, which the caller surfaces rather than swallows.
     """
     out = {}
     for k, v in flax.core.unfreeze(init_p).items():
@@ -84,13 +79,8 @@ def _leaf_paths(p, prefix=()):
             yield prefix + (k,)
 
 
-# --------------------------------------------------------------------------------------
-# optimizer
-# --------------------------------------------------------------------------------------
-
-
 def build_schedule(config: TrainerConfig, steps_per_epoch: int) -> optax.Schedule:
-    """Linear warmup -> cosine decay to `min_lr`."""
+    """Linear warmup, then cosine decay to `min_lr`."""
     total_steps = max(steps_per_epoch * int(config.num_epochs), 1)
     return optax.warmup_cosine_decay_schedule(
         init_value=0.0,
@@ -125,18 +115,13 @@ def ema_update(ema_params, params, momentum):
     )
 
 
-# --------------------------------------------------------------------------------------
-# losses
-# --------------------------------------------------------------------------------------
-
-
 def representation_loss(out, target_repr, eps=1e-6):
     """Masked MSE between the student's per-patch representation and the EMA target.
 
     `out['representation']` (B, Tt, N, E) is the decoder's prediction for every patch,
     projected from decoder_emb_dim back to encoder_dim by `decoder_proj`.
-    `out['masked_indices']` (B, Tt, N, 1) is 1 for masked/dropped patches, so -- as in
-    MAE/SiamMAE's pixel loss -- only patches the encoder never saw contribute.
+    `out['masked_indices']` (B, Tt, N, 1) is 1 for masked/dropped patches, so only
+    patches the encoder never saw directly contribute to the loss.
 
     Targets are instance-normalized over the feature dim (data2vec-style). This is not
     optional: without it the constant solution is trivially reachable and the loss curve
@@ -144,7 +129,7 @@ def representation_loss(out, target_repr, eps=1e-6):
 
     Returns:
       (loss, target_std) where target_std is the mean per-dimension std of the
-      *pre-normalization* targets -- the collapse monitor.
+      pre-normalization targets, i.e. the collapse monitor.
     """
     pred = out["representation"].astype(jnp.float32)
     tgt = target_repr.astype(jnp.float32)
@@ -161,12 +146,7 @@ def representation_loss(out, target_repr, eps=1e-6):
     return loss, tgt_std
 
 
-# --------------------------------------------------------------------------------------
-# steps
-# --------------------------------------------------------------------------------------
-
-
-def make_train_step(model, ema_momentum, patch_size, pixel_weight, norm_pix):
+def make_train_step(model, ema_momentum):
     def train_step(state, batch, rng):
         mask_rng, state_rng, next_rng = jax.random.split(rng, 3)
 
@@ -187,24 +167,10 @@ def make_train_step(model, ema_momentum, patch_size, pixel_weight, norm_pix):
                     method=model.encode_target,
                 )
             )
-            repr_loss, tgt_std = representation_loss(out, target_repr)
+            loss, tgt_std = representation_loss(out, target_repr)
+            return loss, tgt_std
 
-            if pixel_weight > 0.0:
-                pix_loss = rvm_loss(
-                    out,
-                    batch["target"],
-                    patch_size,
-                    masked_only=True,
-                    norm_pix=norm_pix,
-                )
-            else:
-                pix_loss = jnp.zeros((), jnp.float32)
-
-            total = repr_loss + pixel_weight * pix_loss
-            return total, (repr_loss, pix_loss, tgt_std)
-
-        (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
-        repr_loss, pix_loss, tgt_std = aux
+        (loss, tgt_std), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
 
         state = state.apply_gradients(grads=grads)
         state = state.replace(
@@ -213,17 +179,16 @@ def make_train_step(model, ema_momentum, patch_size, pixel_weight, norm_pix):
 
         metrics = {
             "loss": loss,
-            "repr_loss": repr_loss,
-            "pixel_loss": pix_loss,
             "target_std": tgt_std,
             "grad_norm": optax.global_norm(grads),
+            "proj_grad_norm": optax.global_norm(grads["decoder_proj"]),
         }
         return state, metrics, next_rng
 
     return jax.jit(train_step)
 
 
-def make_eval_step(model, patch_size, pixel_weight, norm_pix):
+def make_eval_step(model):
     def eval_step(params, ema_params, batch, rng):
         mask_rng, state_rng = jax.random.split(rng)
         out = model.apply(
@@ -238,28 +203,10 @@ def make_eval_step(model, patch_size, pixel_weight, norm_pix):
         target_repr = model.apply(
             {"params": ema_params}, batch["target"], method=model.encode_target
         )
-        repr_loss, tgt_std = representation_loss(out, target_repr)
-
-        if pixel_weight > 0.0:
-            pix_loss = rvm_loss(
-                out, batch["target"], patch_size, masked_only=True, norm_pix=norm_pix
-            )
-        else:
-            pix_loss = jnp.zeros((), jnp.float32)
-
-        return {
-            "loss": repr_loss + pixel_weight * pix_loss,
-            "repr_loss": repr_loss,
-            "pixel_loss": pix_loss,
-            "target_std": tgt_std,
-        }
+        loss, tgt_std = representation_loss(out, target_repr)
+        return {"loss": loss, "target_std": tgt_std}
 
     return jax.jit(eval_step)
-
-
-# --------------------------------------------------------------------------------------
-# trainer
-# --------------------------------------------------------------------------------------
 
 
 class Trainer:
@@ -278,9 +225,6 @@ class Trainer:
         self.model = build_model(model_config)
         self.patch_size = tuple(model_config.patch_size[-2:])
 
-        self.pixel_weight = float(getattr(self.config, "pixel_weight", 1.0))
-        self.norm_pix = bool(getattr(self.config, "norm_pix", False))
-
         self.checkpoint_dir = os.path.join(self.config.checkpoint_dir, f"exp_{time.time()}")
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         self.ckpt_mgr = ocp.CheckpointManager(
@@ -293,8 +237,6 @@ class Trainer:
         self.global_step = 0
 
         self._init_state()
-
-    # -- setup -------------------------------------------------------------------------
 
     def _init_state(self):
         self.rng, init_rng, state_rng = jax.random.split(self.rng, 3)
@@ -324,16 +266,8 @@ class Trainer:
             apply_fn=self.model.apply, params=params, tx=tx, ema_params=ema_params
         )
 
-        self.train_step_fn = make_train_step(
-            self.model,
-            float(self.config.ema_momentum),
-            self.patch_size,
-            self.pixel_weight,
-            self.norm_pix,
-        )
-        self.eval_step_fn = make_eval_step(
-            self.model, self.patch_size, self.pixel_weight, self.norm_pix
-        )
+        self.train_step_fn = make_train_step(self.model, float(self.config.ema_momentum))
+        self.eval_step_fn = make_eval_step(self.model)
 
         wandb_config = dataclasses.asdict(self.config) | {
             **dataclasses.asdict(self.model_config),
@@ -354,8 +288,8 @@ class Trainer:
         orphaned = ckpt_keys - model_keys
         if orphaned:
             raise ValueError(
-                f"checkpoint leaves unused by the model -- build_model has drifted from "
-                f"the checkpoint architecture: {sorted(orphaned)}"
+                f"checkpoint leaves unused by the model, so build_model has drifted "
+                f"from the checkpoint architecture: {sorted(orphaned)}"
             )
 
         fresh = model_keys - ckpt_keys
@@ -370,8 +304,6 @@ class Trainer:
             f"fresh: {sorted('/'.join(p) for p in fresh)}"
         )
         return merged
-
-    # -- checkpointing -----------------------------------------------------------------
 
     def save_checkpoint(self):
         ckpt = {
@@ -407,8 +339,6 @@ class Trainer:
         self.global_step = int(latest)
         return True
 
-    # -- training ----------------------------------------------------------------------
-
     def train(self, num_epochs: Optional[int] = None):
         num_epochs = num_epochs or int(self.config.num_epochs)
         for _ in tqdm(range(num_epochs), total=num_epochs, leave=False):
@@ -420,8 +350,7 @@ class Trainer:
                     lr = float(self.schedule(self.state.step))
                     print(
                         f"epoch {self.epoch} step {self.global_step} "
-                        f"loss {metrics['loss']:.4f} repr {metrics['repr_loss']:.4f} "
-                        f"pix {metrics['pixel_loss']:.4f} tgt_std {metrics['target_std']:.4f} "
+                        f"loss {metrics['loss']:.4f} tgt_std {metrics['target_std']:.4f} "
                         f"lr {lr:.2e}"
                     )
                     wandb.log(
@@ -447,8 +376,6 @@ class Trainer:
         self.state, metrics, self.rng = self.train_step_fn(self.state, batch, self.rng)
         return {k: float(v) for k, v in metrics.items()}
 
-    # -- evaluation --------------------------------------------------------------------
-
     def _evaluate_and_log(self):
         metrics = self.eval()
         print(
@@ -459,7 +386,6 @@ class Trainer:
             {f"eval/{k}": v for k, v in metrics.items()} | {"epoch": self.epoch},
             step=self.global_step,
         )
-        self._save_reconstruction_visualization()
 
     def eval(self):
         totals: dict[str, float] = {}
@@ -476,60 +402,3 @@ class Trainer:
             n_batches += 1
         return {k: v / max(n_batches, 1) for k, v in totals.items()}
 
-    def _save_reconstruction_visualization(self):
-        """Ground-truth frame next to its full reconstruction, side by side.
-
-        `out['reconstructed']` is already pixel-scale (the `Detokenizer` decodes it
-        directly), so there's no unpatchify step -- except when `norm_pix` is on, where
-        the head regresses normalized patches and we undo that with the ground-truth
-        patch statistics before viewing it as pixels.
-        """
-        if self.eval_loader is None:
-            return
-
-        batch = _to_numpy_batch(next(iter(self.eval_loader)))
-        rng = jax.random.PRNGKey(0)
-        mask_rng, state_rng = jax.random.split(rng)
-        out = self.model.apply(
-            {"params": self.state.params},
-            batch["source"],
-            batch["target"],
-            batch["target_deltas"],
-            rng_key=mask_rng,
-            rngs={"default": state_rng},
-            method=self.model.reconstruct,
-        )
-
-        gt_img = jnp.asarray(batch["target"][0:1, 0:1])  # (1, 1, H, W, 3)
-        pred_img = out["reconstructed"][0:1, 0:1].astype(jnp.float32)
-
-        if self.norm_pix:
-            gt_patches = patchify(gt_img, self.patch_size)
-            mu = gt_patches.mean(axis=-1, keepdims=True)
-            var = gt_patches.var(axis=-1, keepdims=True)
-            pred_patches = patchify(pred_img, self.patch_size)
-            pred_patches = pred_patches * jnp.sqrt(var + 1e-6) + mu
-            pred_img = unpatchify(pred_patches, self.patch_size)
-
-        grid = self._make_side_by_side(
-            self._array_to_pil(np.asarray(gt_img[0, 0])),
-            self._array_to_pil(np.asarray(pred_img[0, 0])),
-        )
-
-        vis_dir = os.path.join(self.checkpoint_dir, "image_vis")
-        os.makedirs(vis_dir, exist_ok=True)
-        grid.save(os.path.join(vis_dir, f"{self.epoch}_{self.global_step}.png"))
-
-    @staticmethod
-    def _array_to_pil(img: np.ndarray) -> Image.Image:
-        arr = np.clip(img, 0, 1) * 255.0
-        return Image.fromarray(arr.astype(np.uint8), mode="RGB")
-
-    @staticmethod
-    def _make_side_by_side(left: Image.Image, right: Image.Image, pad: int = 4) -> Image.Image:
-        width = left.width + right.width + 3 * pad
-        height = max(left.height, right.height) + 2 * pad
-        canvas = Image.new("RGB", (width, height), color=(255, 255, 255))
-        canvas.paste(left, (pad, pad))
-        canvas.paste(right, (2 * pad + left.width, pad))
-        return canvas
