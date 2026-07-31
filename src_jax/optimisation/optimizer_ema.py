@@ -26,11 +26,11 @@ class TrainState(train_state.TrainState):
 
 
 def _to_numpy_batch(batch):
-    """Torch batch (from `RVMDataset.collate_fn`, NHWC) -> numpy, ready for `model.apply`."""
+    """Batch (from `RVMDataset.collate_fn`, NHWC numpy) -> ready for `model.apply`."""
     return {
-        "source": batch["source"].numpy(),
-        "target": batch["target"].numpy(),
-        "target_deltas": batch["target_deltas"].numpy().astype(np.int32),
+        "source": batch["source"],
+        "target": batch["target"],
+        "target_deltas": batch["target_deltas"].astype(np.int32),
     }
 
 

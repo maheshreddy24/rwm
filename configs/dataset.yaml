@@ -1,5 +1,5 @@
 num_source_frames: 4
 num_target_frames: 2
-max_delta: 64
+max_delta: 48
 frame_size: [256, 256]
 min_duration_sec: 4

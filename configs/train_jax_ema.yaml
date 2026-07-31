@@ -12,7 +12,7 @@ model:
   dec_heads: 16
   dec_mlp: 2048
   masking_ratio: 0.95
-  max_delta: 64
+  max_delta: 48
   dtype: bfloat16
 
 dataset:
@@ -20,14 +20,14 @@ dataset:
     video_csv: /home/rvm/datasets/ssv2/train.csv
     num_source_frames: 4
     num_target_frames: 2
-    max_delta: 64
+    max_delta: 48
     frame_size: [256, 256]
     min_duration_sec: 4
   eval:
     video_csv: /home/rvm/datasets/ssv2/test.csv
     num_source_frames: 4
     num_target_frames: 2
-    max_delta: 64
+    max_delta: 48
     frame_size: [256, 256]
     min_duration_sec: 4
 
