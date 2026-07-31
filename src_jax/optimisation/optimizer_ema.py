@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from typing import Any, Optional
 
 import flax
+import flax.traverse_util
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -16,7 +17,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from src_jax.models.rvm_jax import RVMConfig, build_model
-from src_jax.optimisation.config import TrainerConfig
+from src_jax.optimisation.config import EMATrainerConfig
 
 
 class TrainState(train_state.TrainState):
@@ -79,23 +80,48 @@ def _leaf_paths(p, prefix=()):
             yield prefix + (k,)
 
 
-def build_schedule(config: TrainerConfig, steps_per_epoch: int) -> optax.Schedule:
-    """Linear warmup, then cosine decay to `min_lr`."""
-    total_steps = max(steps_per_epoch * int(config.num_epochs), 1)
+def num_optimizer_steps(config: EMATrainerConfig) -> int:
+    """`total_steps` counts dataloader batches; the LR/EMA schedules tick once per
+    optimizer update, i.e. once every `grad_accum` batches."""
+    return max(int(config.total_steps) // int(config.grad_accum), 1)
+
+
+def build_schedule(config: EMATrainerConfig) -> optax.Schedule:
+    """Linear warmup, then cosine decay to `lr_min`, indexed by optimizer step."""
+    total_opt_steps = num_optimizer_steps(config)
+    warmup_opt_steps = int(round(int(config.total_steps) * float(config.warmup_ratio))) // int(
+        config.grad_accum
+    )
     return optax.warmup_cosine_decay_schedule(
         init_value=0.0,
-        peak_value=float(config.lr),
-        warmup_steps=int(config.warmup_steps),
-        decay_steps=total_steps,
-        end_value=float(config.min_lr),
+        peak_value=float(config.lr_peak),
+        warmup_steps=max(warmup_opt_steps, 0),
+        decay_steps=total_opt_steps,
+        end_value=float(config.lr_min),
     )
 
 
-def build_optimizer(config: TrainerConfig, steps_per_epoch: int):
-    schedule = build_schedule(config, steps_per_epoch)
+def build_wd_mask(params, skip_patterns):
+    """True (apply weight decay) for every leaf whose path doesn't contain any of
+    `skip_patterns` (case-insensitive substring match), e.g. 'bias', 'norm',
+    'cls_token', 'pos_embed' stay undecayed."""
+    patterns = [p.lower() for p in skip_patterns]
+    flat = flax.traverse_util.flatten_dict(flax.core.unfreeze(params))
+    mask_flat = {
+        path: not any(p in "/".join(path).lower() for p in patterns) for path in flat
+    }
+    # Match `params`' own container type (plain dict on current flax versions;
+    # optax's mask must have identical pytree structure, not just equal content).
+    mask = flax.traverse_util.unflatten_dict(mask_flat)
+    return flax.core.freeze(mask) if isinstance(params, flax.core.FrozenDict) else mask
+
+
+def build_optimizer(config: EMATrainerConfig, params):
+    schedule = build_schedule(config)
+    mask = build_wd_mask(params, config.wd_skip)
     chain = []
-    if config.grad_clip_norm is not None:
-        chain.append(optax.clip_by_global_norm(float(config.grad_clip_norm)))
+    if config.grad_clip is not None:
+        chain.append(optax.clip_by_global_norm(float(config.grad_clip)))
     chain.append(
         optax.adamw(
             learning_rate=schedule,
@@ -103,19 +129,43 @@ def build_optimizer(config: TrainerConfig, steps_per_epoch: int):
             b2=float(config.betas[1]),
             eps=float(config.eps),
             weight_decay=float(config.weight_decay),
+            mask=mask,
         )
     )
-    return optax.chain(*chain), schedule
+    inner = optax.chain(*chain)
+    tx = optax.MultiSteps(inner, every_k_schedule=int(config.grad_accum))
+    return tx, schedule
 
 
-def ema_update(ema_params, params, momentum):
-    """`ema = momentum * ema + (1 - momentum) * params`, applied leaf-wise."""
+def build_ema_momentum_fn(config: EMATrainerConfig):
+    """Returns `optimizer_step -> momentum`. `optimizer_step` is `MultiStepsState.gradient_step`
+    (increments once per real optimizer update, not per accumulation micro-step)."""
+    total_opt_steps = num_optimizer_steps(config)
+    start_m = float(config.ema_momentum)
+    end_m = float(config.ema_momentum_end)
+    ramp = config.ema_ramp
+
+    def momentum_fn(step):
+        if ramp == "cosine":
+            t = jnp.clip(step / total_opt_steps, 0.0, 1.0)
+            return end_m - (end_m - start_m) * (jnp.cos(jnp.pi * t) + 1.0) / 2.0
+        return jnp.asarray(start_m)
+
+    return momentum_fn
+
+
+def ema_update(ema_params, params, momentum, dtype=jnp.float32):
+    """`ema = momentum * ema + (1 - momentum) * params`, applied leaf-wise in `dtype`."""
     return jax.tree_util.tree_map(
-        lambda e, p: momentum * e + (1.0 - momentum) * p, ema_params, params
+        lambda e, p: (momentum * e.astype(dtype) + (1.0 - momentum) * p.astype(dtype)).astype(
+            dtype
+        ),
+        ema_params,
+        params,
     )
 
 
-def representation_loss(out, target_repr, eps=1e-6):
+def representation_loss(out, target_repr, masked_only=True, eps=1e-6):
     """Masked MSE between the student's per-patch representation and the EMA target.
 
     `out['representation']` (B, Tt, N, E) is the decoder's prediction for every patch,
@@ -138,7 +188,7 @@ def representation_loss(out, target_repr, eps=1e-6):
     var = tgt.var(axis=-1, keepdims=True)
     tgt_n = (tgt - mu) * jax.lax.rsqrt(var + eps)
 
-    mask = out["masked_indices"]  # (B, Tt, N, 1)
+    mask = out["masked_indices"] if masked_only else jnp.ones_like(out["masked_indices"])
     per_token = jnp.mean((pred - tgt_n) ** 2, axis=-1, keepdims=True)
     loss = jnp.sum(per_token * mask) / jnp.clip(jnp.sum(mask), min=1.0)
 
@@ -146,7 +196,11 @@ def representation_loss(out, target_repr, eps=1e-6):
     return loss, tgt_std
 
 
-def make_train_step(model, ema_momentum):
+def make_train_step(model, config: EMATrainerConfig, schedule: optax.Schedule):
+    momentum_fn = build_ema_momentum_fn(config)
+    ema_dtype = getattr(jnp, config.ema_dtype)
+    masked_only = bool(config.loss_on_masked_only)
+
     def train_step(state, batch, rng):
         mask_rng, state_rng, next_rng = jax.random.split(rng, 3)
 
@@ -167,14 +221,22 @@ def make_train_step(model, ema_momentum):
                     method=model.encode_target,
                 )
             )
-            loss, tgt_std = representation_loss(out, target_repr)
+            loss, tgt_std = representation_loss(out, target_repr, masked_only=masked_only)
             return loss, tgt_std
 
         (loss, tgt_std), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
 
         state = state.apply_gradients(grads=grads)
+
+        # `mini_step == 0` means this call just completed a real optimizer update
+        # (as opposed to an intermediate grad_accum accumulation step); gate the
+        # EMA update on it, and ramp momentum over `gradient_step` (the real-update
+        # counter), not the per-batch `state.step`.
+        opt_state = state.opt_state
+        did_update = opt_state.mini_step == 0
+        momentum = jnp.where(did_update, momentum_fn(opt_state.gradient_step), 1.0)
         state = state.replace(
-            ema_params=ema_update(state.ema_params, state.params, ema_momentum)
+            ema_params=ema_update(state.ema_params, state.params, momentum, ema_dtype)
         )
 
         metrics = {
@@ -182,13 +244,15 @@ def make_train_step(model, ema_momentum):
             "target_std": tgt_std,
             "grad_norm": optax.global_norm(grads),
             "proj_grad_norm": optax.global_norm(grads["decoder_proj"]),
+            "ema_momentum": momentum,
+            "lr": schedule(opt_state.gradient_step),
         }
         return state, metrics, next_rng
 
     return jax.jit(train_step)
 
 
-def make_eval_step(model):
+def make_eval_step(model, masked_only: bool = True):
     def eval_step(params, ema_params, batch, rng):
         mask_rng, state_rng = jax.random.split(rng)
         out = model.apply(
@@ -203,7 +267,7 @@ def make_eval_step(model):
         target_repr = model.apply(
             {"params": ema_params}, batch["target"], method=model.encode_target
         )
-        loss, tgt_std = representation_loss(out, target_repr)
+        loss, tgt_std = representation_loss(out, target_repr, masked_only=masked_only)
         return {"loss": loss, "target_std": tgt_std}
 
     return jax.jit(eval_step)
@@ -215,10 +279,10 @@ class Trainer:
         model_config: RVMConfig,
         train_loader,
         eval_loader=None,
-        config: Optional[TrainerConfig] = None,
+        config: Optional[EMATrainerConfig] = None,
     ):
         self.model_config = model_config
-        self.config = config or TrainerConfig()
+        self.config = config or EMATrainerConfig()
         self.train_loader = train_loader
         self.eval_loader = eval_loader
 
@@ -257,17 +321,18 @@ class Trainer:
         n_params = sum(x.size for x in jax.tree_util.tree_leaves(params))
         print(f"model params: {n_params / 1e6:.1f}M")
 
-        # EMA target encoder starts as an exact copy of the (pretrained) params.
-        ema_params = jax.tree_util.tree_map(jnp.array, params)
+        # EMA target encoder starts as an exact copy of the (pretrained) params, cast
+        # to `ema_dtype` regardless of the student's compute dtype.
+        ema_dtype = getattr(jnp, self.config.ema_dtype)
+        ema_params = jax.tree_util.tree_map(lambda x: jnp.asarray(x, dtype=ema_dtype), params)
 
-        steps_per_epoch = len(self.train_loader)
-        tx, self.schedule = build_optimizer(self.config, steps_per_epoch)
+        tx, self.schedule = build_optimizer(self.config, params)
         self.state = TrainState.create(
             apply_fn=self.model.apply, params=params, tx=tx, ema_params=ema_params
         )
 
-        self.train_step_fn = make_train_step(self.model, float(self.config.ema_momentum))
-        self.eval_step_fn = make_eval_step(self.model)
+        self.train_step_fn = make_train_step(self.model, self.config, self.schedule)
+        self.eval_step_fn = make_eval_step(self.model, masked_only=bool(self.config.loss_on_masked_only))
 
         wandb_config = dataclasses.asdict(self.config) | {
             **dataclasses.asdict(self.model_config),
@@ -339,23 +404,28 @@ class Trainer:
         self.global_step = int(latest)
         return True
 
-    def train(self, num_epochs: Optional[int] = None):
-        num_epochs = num_epochs or int(self.config.num_epochs)
-        for _ in tqdm(range(num_epochs), total=num_epochs, leave=False):
-            for batch in tqdm(self.train_loader, total=len(self.train_loader), leave=True):
+    def train(self, total_steps: Optional[int] = None):
+        """Runs `total_steps` dataloader batches (default: `config.total_steps`), cycling
+        the loader across as many passes as needed. Budget is tracked in batches/samples,
+        not epochs; `self.epoch` only counts full passes, for checkpointing/logging."""
+        total_steps = total_steps or int(self.config.total_steps)
+        pbar = tqdm(total=total_steps, initial=self.global_step, leave=True)
+        while self.global_step < total_steps:
+            for batch in self.train_loader:
+                if self.global_step >= total_steps:
+                    break
                 metrics = self._train_step(batch)
                 self.global_step += 1
+                pbar.update(1)
 
                 if self.global_step % int(self.config.log_interval) == 0:
-                    lr = float(self.schedule(self.state.step))
                     print(
                         f"epoch {self.epoch} step {self.global_step} "
                         f"loss {metrics['loss']:.4f} tgt_std {metrics['target_std']:.4f} "
-                        f"lr {lr:.2e}"
+                        f"lr {metrics['lr']:.2e} ema_m {metrics['ema_momentum']:.6f}"
                     )
                     wandb.log(
-                        {f"train/{k}": v for k, v in metrics.items()}
-                        | {"train/lr": lr, "epoch": self.epoch},
+                        {f"train/{k}": v for k, v in metrics.items()} | {"epoch": self.epoch},
                         step=self.global_step,
                     )
 
@@ -370,6 +440,7 @@ class Trainer:
 
             if self.eval_loader is not None:
                 self._evaluate_and_log()
+        pbar.close()
 
     def _train_step(self, batch):
         batch = _to_numpy_batch(batch)

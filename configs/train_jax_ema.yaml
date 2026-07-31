@@ -32,21 +32,38 @@ dataset:
     min_duration_sec: 4
 
 dataloader:
-  batch_size: 16
+  batch_size: 32
   num_workers: 4
 
 trainer:
   checkpoint_dir: checkpoints_ema_jax
   init_params_path: /home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz
-  lr: 1.5e-4
+
+  # budget: batch_size (above) x grad_accum = 32 x 4 = 128 effective; ~1M examples
+  total_steps: 30000              # counted in dataloader batches, not optimizer steps
+  grad_accum: 4
+
+  # optimizer (AdamW, MAE-lineage defaults)
+  lr_peak: 5.0e-5                 # SWEEP THIS on run B first
+  lr_min: 5.0e-7                  # cosine floor, 1% of peak
+  betas: [0.9, 0.95]              # not 0.999 -- MAE family uses 0.95
+  eps: 1.0e-8
   weight_decay: 0.05
-  betas: [0.9, 0.95]
-  eps: 1e-8
-  grad_clip_norm: 1.0
-  num_epochs: 2
-  warmup_steps: 500
-  min_lr: 1e-6
-  norm_pix: false
-  ema_momentum: 0.998
-  ema_update_every: 1
+  wd_skip: [bias, norm, cls_token, pos_embed]
+  grad_clip: 1.0
+
+  # schedule (cosine + warmup)
+  warmup_ratio: 0.05              # 1500 of the 30000 batches
+
+  # EMA teacher: momentum ramps cosine from ema_momentum to ema_momentum_end over the run
+  ema_momentum: 0.999
+  ema_momentum_end: 0.9999
+  ema_ramp: cosine
+  ema_dtype: float32
+
+  # objective: masked L2 between student representation and instance-normalized
+  # (layernorm, no affine) EMA-teacher representation -- see representation_loss()
+  loss_on_masked_only: true
+
   log_interval: 100
+  eval_interval: 1000

@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src_jax.datasets.rvm_dataset import RVMDataset
 from src_jax.models.rvm_jax import RVMConfig
-from src_jax.optimisation.config import TrainerConfig
+from src_jax.optimisation.config import EMATrainerConfig
 from src_jax.optimisation.optimizer_ema import Trainer
 
 
@@ -64,7 +64,7 @@ def main():
     if isinstance(model_kwargs.get("dtype"), str):
         model_kwargs["dtype"] = getattr(jnp, model_kwargs["dtype"])
     model_config = RVMConfig(**model_kwargs)
-    trainer_config = TrainerConfig(**config.get("trainer", {}))
+    trainer_config = EMATrainerConfig(**config.get("trainer", {}))
 
     dataset_max_delta = config["dataset"]["train"].get("max_delta", 64)
     assert dataset_max_delta <= 64, (
