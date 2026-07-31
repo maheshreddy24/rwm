@@ -13,3 +13,26 @@ ccuurrcllu::r  l((:33 ))(  3UU)RR LLU  RuuLss iiunnsggi  nbbgaa ddb//aiidll/llie
 
 RL
 curl: (3) URL using bad/illegal format or missing URL
+/home/mahesh/rvm/datasets/download_kinetics_train.py:25: DeprecationWarning: Python 3.14 will, by default, filter extracted tar archives and reject files or modify their metadata. Use the filter argument to control this behavior.
+  # Download
+failed: https://s3.amazonaws.com/kinetics/600/train/opening wine bottle.tar.gz -> Command '['curl', '-fsSL', 'https://s3.amazonaws.com/kinetics/600/train/opening wine bottle.tar.gz', '-o', '/home/mahesh/rvm/datasets/kinetics_dataset/opening wine bottle.tar.gz']' returned non-zero exit status 3.
+failed: https://s3.amazonaws.com/kinetics/600/train/tightrope walking.tar.gz -> Command '['curl', '-fsSL', 'https://s3.amazonaws.com/kinetics/600/train/tightrope walking.tar.gz', '-o', '/home/mahesh/rvm/datasets/kinetics_dataset/tightrope walking.tar.gz']' returned non-zero exit status 3.
+failed: https://s3.amazonaws.com/kinetics/600/train/historical reenactment.tar.gz -> Command '['curl', '-fsSL', 'https://s3.amazonaws.com/kinetics/600/train/historical reenactment.tar.gz', '-o', '/home/mahesh/rvm/datasets/kinetics_dataset/historical reenactment.tar.gz']' returned non-zero exit status 3.
+failed: https://s3.amazonaws.com/kinetics/600/train/roller skating.tar.gz -> Command '['curl', '-fsSL', 'https://s3.amazonaws.com/kinetics/600/train/roller skating.tar.gz', '-o', '/home/mahesh/rvm/datasets/kinetics_dataset/roller skating.tar.gz']' returned non-zero exit status 3.
+failed: https://s3.amazonaws.com/kinetics/600/train/dancing charleston.tar.gz -> Command '['curl', '-fsSL', 'https://s3.amazonaws.com/kinetics/600/train/dancing charleston.tar.gz', '-o', '/home/mahesh/rvm/datasets/kinetics_dataset/dancing charleston.tar.gz']' returned non-zero exit status 3.
+failed: https://s3.amazonaws.com/kinetics/600/train/skiing crosscountry.tar.gz -> Command '['curl', '-fsSL', 'https://s3.amazonaws.com/kinetics/600/train/skiing crosscountry.tar.gz', '-o', '/home/mahesh/rvm/datasets/kinetics_dataset/skiing crosscountry.tar.gz']' returned non-zero exit status 3.
+failed: https://s3.amazonaws.com/kinetics/600/train/looking at phone.tar.gz -> Command '['curl', '-fsSL', 'https://s3.amazonaws.com/kinetics/600/train/looking at phone.tar.gz', '-o', '/home/mahesh/rvm/datasets/kinetics_dataset/looking at phone.tar.gz']' returned non-zero exit status 3.
+failed: https://s3.amazonaws.com/kinetics/600/train/petting animal (not cat).tar.gz -> Command '['curl', '-fsSL', 'https://s3.amazonaws.com/kinetics/600/train/petting animal (not cat).tar.gz', '-o', '/home/mahesh/rvm/datasets/kinetics_dataset/petting animal (not cat).tar.gz']' returned non-zero exit status 3.
+failed: https://s3.amazonaws.com/kinetics/600/train/smelling feet.tar.gz -> Command '['curl', '-fsSL', 'https://s3.amazonaws.com/kinetics/600/train/smelling feet.tar.gz', '-o', '/home/mahesh/rvm/datasets/kinetics_dataset/smelling feet.tar.gz']' returned non-zero exit status 3.
+failed: https://s3.amazonaws.com/kinetics/600/train/snatch weight lifting.tar.gz -> Command '['curl', '-fsSL', 'https://s3.amazonaws.com/kinetics/600/train/snatch weight lifting.tar.gz', '-o', '/home/mahesh/rvm/datasets/kinetics_dataset/snatch weight lifting.tar.gz']' returned non-zero exit status 3.
+failed: https://s3.amazonaws.com/kinetics/600/train/triple jump.tar.gz -> Command '['curl', '-fsSL', 'https://s3.amazonaws.com/kinetics/600/train/triple jump.tar.gz', '-o', '/home/mahesh/rvm/datasets/kinetics_dataset/triple jump.tar.gz']' returned non-zero exit status 3.
+failed: https://s3.amazonaws.com/kinetics/600/train/training dog.tar.gz -> Command '['curl', '-fsSL', 'https://s3.amazonaws.com/kinetics/600/train/training dog.tar.gz', '-o', '/home/mahesh/rvm/datasets/kinetics_dataset/training dog.tar.gz']' returned non-zero exit status 3.
+failed: https://s3.amazonaws.com/kinetics/600/train/folding paper.tar.gz -> Command '['curl', '-fsSL', 'https://s3.amazonaws.com/kinetics/600/train/folding paper.tar.gz', '-o', '/home/mahesh/rvm/datasets/kinetics_dataset/folding paper.tar.gz']' returned non-zero exit status 3.
+failed: https://s3.amazonaws.com/kinetics/600/train/pushing wheelchair.tar.gz -> Command '['curl', '-fsSL', 'https://s3.amazonaws.com/kinetics/600/train/pushing wheelchair.tar.gz', '-o', '/home/mahesh/rvm/datasets/kinetics_dataset/pushing wheelchair.tar.gz']' returned non-zero exit status 3.
+failed: https://s3.amazonaws.com/kinetics/600/train/playing hand clapping games.tar.gz -> Command '['curl', '-fsSL', 'https://s3.amazonaws.com/kinetics/600/train/playing hand clapping games.tar.gz', '-o', '/home/mahesh/rvm/datasets/kinetics_dataset/playing hand clapping games.tar.gz']' returned non-zero exit status 3.
+done: sewing (671 clips)
+done: clapping (543 clips)
+done: sailing (555 clips)
+done: zumba (936 clips)
+done: jetskiing (993 clips)
+wrote 3698 clip paths to /home/mahesh/rvm/datasets/kinetics_train_set_clip_paths.csv
