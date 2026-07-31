@@ -408,7 +408,8 @@ class Trainer:
         """Runs `total_steps` dataloader batches (default: `config.total_steps`), cycling
         the loader across as many passes as needed. Budget is tracked in batches/samples,
         not epochs; `self.epoch` only counts full passes, for checkpointing/logging."""
-        total_steps = total_steps or int(self.config.total_steps)
+        # total_steps = total_steps or int(self.config.total_steps)
+        total_steps = len(self.train_loader)
         pbar = tqdm(total=total_steps, initial=self.global_step, leave=True)
         while self.global_step < total_steps:
             for batch in self.train_loader:
