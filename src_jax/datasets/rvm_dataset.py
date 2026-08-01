@@ -45,10 +45,13 @@ class RVMDataset(Dataset):
         self.rng = np.random.default_rng()
 
         data_paths = []
+        from icecream import ic
         with open(self.video_csv, mode="r", newline="", encoding="utf-8") as file:
             reader = csv.reader(file)
+            # print(reader[0])
             for i, row in enumerate(reader):
-                if i > 0 and float(row[-1]) > min_duration_sec:
+                # ic(row)
+                if i > 0 and float(row[-2]) > min_duration_sec: # path, frames, fps, duration, source
                     data_paths.append(row)
 
         self.data_paths = data_paths

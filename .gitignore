@@ -9,3 +9,5 @@ k700_train_361.tar.gz
 20bn*
 evals/pusht
 *.pyc
+
+*.csv
