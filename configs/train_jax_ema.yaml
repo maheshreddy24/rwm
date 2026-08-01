@@ -33,14 +33,13 @@ dataset:
 
 dataloader:
   batch_size: 16
-  num_workers: 4
+  num_workers: 8
 
 trainer:
   checkpoint_dir: checkpoints_ema_jax
   init_params_path: /home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz
 
   # budget: batch_size (above) x grad_accum = 32 x 4 = 128 effective; ~1M examples
-  total_steps: 30000              # counted in dataloader batches, not optimizer steps
   grad_accum: 4
 
   # optimizer (AdamW, MAE-lineage defaults)

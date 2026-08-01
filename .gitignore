@@ -11,3 +11,4 @@ evals/pusht
 *.pyc
 
 *.csv
+checkpoints_ema_jax
