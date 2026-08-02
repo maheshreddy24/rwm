@@ -12,3 +12,5 @@ evals/pusht
 
 *.csv
 checkpoints_ema_jax
+
+evals/action_recog/datasets
