@@ -1,0 +1,1 @@
+# Optimization is fixed across all tasks and models: 1.28M training examples, batch size 32 → 40k steps, AdamW, wd 1e-4, LR swept over {1e-4, 3e-4, 1e-3}, 1k-step linear warmup, cosine decay to 1e-7.

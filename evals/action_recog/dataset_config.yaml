@@ -1,0 +1,9 @@
+train_json: /home/mahesh/rvm/evals/action_recog/datasets/ssv2/labels/train.json
+test_json: /home/mahesh/rvm/evals/action_recog/datasets/ssv2/labels/test.json
+validation_json: /home/mahesh/rvm/evals/action_recog/datasets/ssv2/labels/validation.json
+
+test_answer_csv: /home/mahesh/rvm/evals/action_recog/datasets/ssv2/labels/test-answers.csv
+labels_json: /home/mahesh/rvm/evals/action_recog/datasets/ssv2/labels/labels.json
+
+
+videos_dir: /home/mahesh/rvm/evals/action_recog/datasets/ssv2/videos
