@@ -1,5 +1,7 @@
 import dataclasses
 import os
+import pickle
+import re
 import time
 from collections.abc import Mapping
 from typing import Any, Optional
@@ -11,7 +13,6 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from src_jax.optimisation.collapse_utills import collapse_test, flatten_collapse_metrics
-import orbax.checkpoint as ocp
 import wandb
 from flax.training import train_state
 from PIL import Image
@@ -79,6 +80,41 @@ def _leaf_paths(p, prefix=()):
             yield from _leaf_paths(v, prefix + (k,))
         else:
             yield prefix + (k,)
+
+
+def save_pytree_npz(path: str, tree: Any) -> None:
+    """Save an arbitrary pytree (nested dicts/namedtuples of arrays/scalars) to a
+    single .npz file: leaves as arrays, structure as a pickled treedef alongside them.
+
+    Dtype names are stored per-leaf and restored via `.view` on load: npz round-trips
+    ml_dtypes extension types (e.g. bfloat16, used for `ema_dtype`) as opaque `void`
+    bytes rather than preserving the dtype, so a plain `jnp.asarray` on load would
+    silently corrupt them.
+
+    Single-device only: every leaf must already live on this host as something
+    `np.asarray` can convert directly (no cross-device gather/reshard).
+    """
+    leaves, treedef = jax.tree_util.tree_flatten(tree)
+    arrays = [np.asarray(x) for x in leaves]
+    payload = {f"leaf_{i}": arr for i, arr in enumerate(arrays)}
+    payload["treedef"] = np.array([pickle.dumps(treedef)], dtype=object)
+    payload["dtypes"] = np.array([str(arr.dtype) for arr in arrays], dtype=object)
+    np.savez(path, **payload)
+
+
+def load_pytree_npz(path: str) -> Any:
+    """Inverse of `save_pytree_npz`."""
+    data = np.load(path, allow_pickle=True)
+    treedef = pickle.loads(data["treedef"][0])
+    dtypes = data["dtypes"]
+    leaves = []
+    for i, dtype_str in enumerate(dtypes):
+        arr = data[f"leaf_{i}"]
+        target = np.dtype(dtype_str)
+        if arr.dtype != target:
+            arr = arr.view(target)
+        leaves.append(jnp.asarray(arr))
+    return jax.tree_util.tree_unflatten(treedef, leaves)
 
 
 def num_optimizer_steps(config: EMATrainerConfig) -> int:
@@ -316,10 +352,7 @@ class Trainer:
 
         self.checkpoint_dir = os.path.join(self.config.checkpoint_dir, f"exp_{time.time()}")
         os.makedirs(self.checkpoint_dir, exist_ok=True)
-        self.ckpt_mgr = ocp.CheckpointManager(
-            os.path.abspath(self.checkpoint_dir),
-            options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True),
-        )
+        self.max_checkpoints_to_keep = 3
 
         self.rng = jax.random.PRNGKey(self.config.seed or 0)
         self.epoch = 0
@@ -396,6 +429,17 @@ class Trainer:
         )
         return merged
 
+    def _checkpoint_path(self, step: int) -> str:
+        return os.path.join(self.checkpoint_dir, f"ckpt_{step:08d}.npz")
+
+    def _checkpoint_steps(self) -> list[int]:
+        steps = []
+        for fname in os.listdir(self.checkpoint_dir):
+            m = re.fullmatch(r"ckpt_(\d+)\.npz", fname)
+            if m:
+                steps.append(int(m.group(1)))
+        return sorted(steps)
+
     def save_checkpoint(self):
         ckpt = {
             "params": self.state.params,
@@ -404,22 +448,19 @@ class Trainer:
             "step": self.state.step,
             "epoch": self.epoch,
         }
-        self.ckpt_mgr.save(self.global_step, args=ocp.args.StandardSave(ckpt))
-        self.ckpt_mgr.wait_until_finished()
+        save_pytree_npz(self._checkpoint_path(self.global_step), ckpt)
+
+        steps = self._checkpoint_steps()
+        for stale in steps[: -self.max_checkpoints_to_keep]:
+            os.remove(self._checkpoint_path(stale))
         return self.checkpoint_dir
 
     def resume(self):
-        latest = self.ckpt_mgr.latest_step()
-        if latest is None:
+        steps = self._checkpoint_steps()
+        if not steps:
             return False
-        target = {
-            "params": self.state.params,
-            "ema_params": self.state.ema_params,
-            "opt_state": self.state.opt_state,
-            "step": self.state.step,
-            "epoch": self.epoch,
-        }
-        restored = self.ckpt_mgr.restore(latest, args=ocp.args.StandardRestore(target))
+        latest = steps[-1]
+        restored = load_pytree_npz(self._checkpoint_path(latest))
         self.state = self.state.replace(
             params=restored["params"],
             ema_params=restored["ema_params"],
