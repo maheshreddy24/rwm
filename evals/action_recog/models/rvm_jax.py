@@ -686,15 +686,15 @@ class RVMConfig:
   max_delta: int = 64
   dtype: Any = jnp.bfloat16  # compute dtype for encoder/core/decoder (params stay fp32)
 
-def build_model(cfg: RVMConfig) -> VideoSiamMAE:
+def build_model(cfg: RVMConfig = None) -> VideoSiamMAE:
   """Builds a `VideoSiamMAE` from an `RVMConfig`."""
-  vit_spec = ViTSpec.from_variant_string(cfg.variant)
-  hidden_size = vit_spec.hidden_size
-  core_mlp = cfg.core_mlp or 4 * hidden_size
-  base_token_shape = (
-      cfg.frame_size[0] // cfg.patch_size[-2],
-      cfg.frame_size[1] // cfg.patch_size[-1],
-  )
+  # vit_spec = ViTSpec.from_variant_string(cfg.variant)
+  # hidden_size = vit_spec.hidden_size
+  # core_mlp = cfg.core_mlp or 4 * hidden_size
+  # base_token_shape = (
+  #     cfg.frame_size[0] // cfg.patch_size[-2],
+  #     cfg.frame_size[1] // cfg.patch_size[-1],
+  # )
   model_variant = 'S'
   return  VideoSiamMAE(
     tokenizer=Tokenizer(
