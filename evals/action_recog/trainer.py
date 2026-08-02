@@ -7,17 +7,21 @@ import sys
 import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
+from icecream import ic
+
+# torch (and anything importing torchvision) must load before jax:
+# libtriton.so and jaxlib each bundle their own LLVM, and whichever
+# dlopens second binds the wrong symbols and segfaults.
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-import torch
-import torch.nn as nn
 import wandb
 import yaml
-from torch.utils.data import DataLoader
 from tqdm import tqdm
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from models.readout_head import Readout
@@ -28,6 +32,8 @@ from ssv2_inf_dataset import SSv2
 #! params from the 4D scaling paper (Carreira et al.), optimization fixed across all tasks/models:
 #! 1.28M training examples, batch size 32 -> 40k steps, AdamW, wd 1e-4,
 #! LR swept over {1e-4, 3e-4, 1e-3}, 1k-step linear warmup, cosine decay to 1e-7.
+#! here the same budget is expressed in epochs: num_epochs * len(train_loader)
+#! optimizer updates, with warmup_ratio of those spent on linear warmup.
 
 
 def recover_tree(flat_dict):
@@ -44,7 +50,11 @@ def recover_tree(flat_dict):
 
 
 def _warmup_cosine(step: int, warmup_steps: int, total_steps: int, base_lr: float, min_lr: float) -> float:
-    """Multiplicative LR factor (relative to `base_lr`): linear warmup, then cosine decay to `min_lr`."""
+    """Multiplicative LR factor (relative to `base_lr`): linear warmup, then cosine decay to `min_lr`.
+
+    Still called once per optimizer update -- the LR schedule stays smooth within
+    an epoch; only logging/eval/checkpointing are driven by the epoch counter.
+    """
     if step < warmup_steps:
         return (step + 1) / max(1, warmup_steps)
     progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
@@ -74,7 +84,7 @@ def _build_forward_fn(rvm_model):
         )
         # cast on-device: bfloat16 arrays don't cross the jax->numpy->torch
         # boundary cleanly, so land on a real float32 before returning.
-        return out["representation"].astype(jnp.float32)
+        return out["features"].astype(jnp.float32)
 
     return jax.jit(_forward)
 
@@ -92,16 +102,16 @@ class TrainConfig:
     betas: Tuple[float, float] = (0.9, 0.999)
     eps: float = 1e-8
 
-    total_steps: int = 40000
-    warmup_steps: int = 1000
+    num_epochs: int = 20
+    warmup_ratio: float = 0.025  # 1k warmup steps out of a 40k-step budget
     min_lr: float = 1e-7
 
     batch_size: int = 32
     num_workers: int = 8
     amp: bool = True
 
-    log_interval: int = 50
-    eval_interval: int = 1000
+    log_interval: int = 1      # in epochs
+    eval_interval: int = 1     # in epochs
     checkpoint_dir: str = "checkpoints_ssv2_acr"
 
     wandb_project: str = "rvm-action-recog"
@@ -120,8 +130,8 @@ class TrainConfig:
         self.betas = tuple(float(b) for b in self.betas)
         self.eps = float(self.eps)
         self.min_lr = float(self.min_lr)
-        self.total_steps = int(self.total_steps)
-        self.warmup_steps = int(self.warmup_steps)
+        self.num_epochs = int(self.num_epochs)
+        self.warmup_ratio = float(self.warmup_ratio)
         self.batch_size = int(self.batch_size)
         self.num_workers = int(self.num_workers)
         self.log_interval = int(self.log_interval)
@@ -167,6 +177,7 @@ class Trainer:
         # re-transferring host numpy arrays on every call.
         self.restored_params = jax.tree_util.tree_map(jnp.asarray, restored)
         self._forward_fn = _build_forward_fn(self.rvm_encoder)
+        self.epochs = self.config.num_epochs
 
         count = sum(np.prod(v.shape) for v in jax.tree_util.tree_leaves(self.restored_params))
         print(f"number of params for RVM encoder = {count}")
@@ -184,24 +195,20 @@ class Trainer:
         self.optimizer = None
         self.scheduler = None
         self.scaler = torch.amp.GradScaler(enabled=self.config.amp and self.device_type == "cuda")
-        self.global_step = 0
+        self.current_epoch = 0
 
         self.init_optim()
 
     def _extract_representation(self, frames_np: np.ndarray) -> torch.Tensor:
-        """frames_np: (B, T, H, W, C) clip -> (B, T, N, 384) frozen backbone features.
-
-        Uses frame 0 as the single source/context frame and every frame in the
-        clip (deltas 0..T-1 from that source) as targets, so `representation`
-        covers all T frames -- matching what `Readout(num_frames=T)` expects.
-        """
+        """frames_np: (B, T, H, W, C) clip -> (B, T, N, 384) frozen backbone features."""
         B, T, H, W, C = frames_np.shape
-        source = frames_np[:, :1]  # (B, 1, H, W, C)
-        deltas = np.tile(np.arange(T, dtype=np.int32), (B, 1))  # (B, T)
+        source = frames_np                                       # (B, T, H, W, C)
+        target = frames_np[:, -1:, :, :, :]                      # (B, 1, H, W, C)  <- keep the axis
+        deltas = np.zeros((B, 1), dtype=np.int32)                # (B, 1), matches Tt=1
 
         self.rng_key, step_key = jax.random.split(self.rng_key)
         representation = self._forward_fn(
-            self.restored_params, source, frames_np, deltas, step_key
+            self.restored_params, source, target, deltas, step_key
         )
         return torch.from_numpy(np.asarray(representation))
 
@@ -213,13 +220,15 @@ class Trainer:
             betas=self.config.betas,
             eps=self.config.eps,
         )
-
+        # full optimizer budget = every batch of every epoch
+        total_steps = self.epochs * len(self.train_loader)
+        warmup_steps = int(self.config.warmup_ratio * total_steps)
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer,
             lr_lambda=lambda step: _warmup_cosine(
                 step,
-                self.config.warmup_steps,
-                self.config.total_steps,
+                warmup_steps,
+                total_steps,
                 self.config.lr,
                 self.config.min_lr,
             ),
@@ -231,14 +240,14 @@ class Trainer:
             config=dataclasses.asdict(self.config),
         )
 
-    def save_checkpoint(self, name: str = "last.pt"):
+    def save_checkpoint(self, epoch: int, name: str = "last.pt"):
         path = os.path.join(self.checkpoint_dir, name)
         torch.save(
             {
                 "model": self.model.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
                 "scheduler": self.scheduler.state_dict(),
-                "global_step": self.global_step,
+                "epoch": epoch,
                 "config": dataclasses.asdict(self.config),
             },
             path,
@@ -252,24 +261,36 @@ class Trainer:
             self.optimizer.load_state_dict(ckpt["optimizer"])
         if ckpt.get("scheduler") is not None:
             self.scheduler.load_state_dict(ckpt["scheduler"])
-        self.global_step = ckpt.get("global_step", 0)
+        # resume from the epoch after the one that was saved
+        self.current_epoch = ckpt.get("epoch", -1) + 1
         return ckpt
 
     def train(self):
         self.model.train()
-        pbar = tqdm(total=self.config.total_steps, initial=self.global_step, desc="Training")
 
-        while self.global_step < self.config.total_steps:
-            for frames, labels in self.train_loader:
-                if self.global_step >= self.config.total_steps:
-                    break
+        global_step = self.current_epoch * len(self.train_loader)
 
+        for epoch in tqdm(range(self.current_epoch, self.epochs), desc="Epochs", leave=True):
+            self.current_epoch = epoch
+
+            running_loss = 0.0
+            num_batches = 0
+
+            for step, (frames, labels) in tqdm(
+                enumerate(self.train_loader),
+                total=len(self.train_loader),
+                desc=f"Epoch {epoch}",
+                leave=False,
+            ):
                 representation = self._extract_representation(
                     frames.detach().cpu().numpy()
                 ).to(self.device)
                 labels = labels.to(self.device)
 
-                with torch.amp.autocast(device_type=self.device_type, enabled=self.config.amp):
+                with torch.amp.autocast(
+                    device_type=self.device_type,
+                    enabled=self.config.amp,
+                ):
                     logits = self.model(representation)
                     loss = self.criterion(logits, labels)
 
@@ -279,25 +300,50 @@ class Trainer:
                 self.scaler.update()
                 self.scheduler.step()
 
-                self.global_step += 1
-                pbar.update(1)
+                running_loss += loss.item()
+                num_batches += 1
+                global_step += 1
 
-                if self.global_step % self.config.log_interval == 0:
+                # Step-based logging
+                if global_step % self.config.log_interval == 0:
                     wandb.log(
-                        {"train/loss": loss.item(), "train/lr": self.scheduler.get_last_lr()[0]},
-                        step=self.global_step,
+                        {
+                            "train/loss_step": loss.item(),
+                            "train/lr": self.scheduler.get_last_lr()[0],
+                            "epoch": epoch,
+                        },
+                        step=global_step,
                     )
-                    print(f"step {self.global_step}/{self.config.total_steps} loss {loss.item():.4f}")
+                    print(
+                        f"[epoch {epoch} step {global_step}] "
+                        f"loss {loss.item():.4f}"
+                    )
 
-                if self.global_step % self.config.eval_interval == 0:
-                    if self.eval_loader is not None:
-                        self.evaluate()
-                        self.model.train()
-                    self.save_checkpoint(name=f"step_{self.global_step}.pt")
+                # Step-based evaluation
+                if (
+                    self.eval_loader is not None
+                    and global_step % self.config.eval_interval == 0
+                ):
+                    self.evaluate()
+                    self.model.train()
 
-        pbar.close()
-        self.save_checkpoint(name="final.pt")
+            # Epoch statistics
+            epoch_loss = running_loss / max(1, num_batches)
 
+            wandb.log(
+                {
+                    "train/epoch_loss": epoch_loss,
+                    "epoch": epoch,
+                },
+                step=global_step,
+            )
+
+            print(f"[epoch {epoch}] average train loss: {epoch_loss:.4f}")
+
+            # Save checkpoint every epoch
+            self.save_checkpoint(epoch=epoch, name=f"epoch_{epoch}.pt")
+
+        self.save_checkpoint(epoch=self.epochs - 1, name="final.pt")
     @torch.no_grad()
     def evaluate(self):
         self.model.eval()
@@ -319,10 +365,14 @@ class Trainer:
             total_correct += (logits.argmax(dim=-1) == labels).sum().item()
             total_samples += frames.size(0)
 
-        avg_loss = total_loss / total_samples
-        accuracy = total_correct / total_samples
-        wandb.log({"eval/loss": avg_loss, "eval/accuracy": accuracy}, step=self.global_step)
-        print(f"[step {self.global_step}] eval loss {avg_loss:.4f} acc {accuracy:.4f}")
+        avg_loss = total_loss / max(1, total_samples)
+        accuracy = total_correct / max(1, total_samples)
+        wandb.log(
+            {"eval/loss": avg_loss, "eval/accuracy": accuracy, "epoch": self.current_epoch},
+            step=self.current_epoch,
+        )
+        print(f"[epoch {self.current_epoch}] eval loss {avg_loss:.4f} acc {accuracy:.4f}")
+        return avg_loss, accuracy
 
 
 def build_dataloaders(config: TrainConfig):

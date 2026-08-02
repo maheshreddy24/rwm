@@ -1,0 +1,47 @@
+Epochs:   0%|                                                                                                                                                  | 0/2 [00:00<?, ?it/s]/root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/popen_fork.py:66: RuntimeWarning: os.fork() was called. os.fork() is incompatible with multithreaded code, and JAX is multithreaded, so this will likely lead to a deadlock.
+  self.pid = os.fork()                                                                                                                                     | 0/10520 [00:00<?, ?it/s]
+Epochs:   0%|                                                                                                                                                  | 0/2 [00:04<?, ?it/s]
+jax.errors.SimplifiedTraceback: For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these. 
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/rvm/evals/action_recog/trainer.py", line 396, in <module>
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 392, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 286, in train
+    representation = self._extract_representation(
+  File "/home/rvm/evals/action_recog/trainer.py", line 213, in _extract_representation
+    representation = self._forward_fn(
+  File "/home/rvm/evals/action_recog/trainer.py", line 78, in _forward
+    out = rvm_model.apply(
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 641, in reconstruct
+    representation = self.decoder_proj(decoded[..., 1:, :])
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 379, in __call__
+    return nn.Dense(self.encoder_dim, dtype=x.dtype)(x)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/flax/linen/linear.py", line 264, in __call__
+    kernel = self.param(
+flax.errors.ScopeParamNotFoundError: Could not find parameter named "kernel" in scope "/decoder_proj/Dense_0". (https://flax.readthedocs.io/en/latest/api_reference/flax.errors.html#flax.errors.ScopeParamNotFoundError)
+jax.errors.SimplifiedTraceback: For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/rvm/evals/action_recog/trainer.py", line 396, in <module>
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 392, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 286, in train
+    representation = self._extract_representation(
+  File "/home/rvm/evals/action_recog/trainer.py", line 213, in _extract_representation
+    representation = self._forward_fn(
+  File "/home/rvm/evals/action_recog/trainer.py", line 78, in _forward
+    out = rvm_model.apply(
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 641, in reconstruct
+    representation = self.decoder_proj(decoded[..., 1:, :])
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 379, in __call__
+    return nn.Dense(self.encoder_dim, dtype=x.dtype)(x)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/flax/linen/linear.py", line 264, in __call__
+    kernel = self.param(
+flax.errors.ScopeParamNotFoundError: Could not find parameter named "kernel" in scope "/decoder_proj/Dense_0". (https://flax.readthedocs.io/en/latest/api_reference/flax.errors.html#flax.errors.ScopeParamNotFoundError)

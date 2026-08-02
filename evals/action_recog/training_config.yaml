@@ -1,10 +1,10 @@
 device: "cuda:0"
 seed: 42
 
-dataset_config_path: "/home/mahesh/rvm/evals/action_recog/dataset_config.yaml"
+dataset_config_path: "/home/rvm/evals/action_recog/dataset_config.yaml"
 # TODO: point this at your local restored-params npz (previous path referenced
 # a different machine's filesystem: /home/geometric-ssl/...).
-restored_params_path: "/home/mahesh/rvm/evals/ckpts/pretrain_rvm_small16_256_204031069.npz"
+restored_params_path: "/home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz"
 
 # Optimization fixed across all tasks/models (4D scaling paper, Carreira et al.):
 # 1.28M training examples, batch size 32 -> 40k steps, AdamW, wd 1e-4,
@@ -14,15 +14,15 @@ weight_decay: 1.0e-4
 betas: [0.9, 0.999]
 eps: 1.0e-8
 
-total_steps: 40000
-warmup_steps: 1000
+warmup_ratio: 0.05
 min_lr: 1.0e-7
 
-batch_size: 32
+num_epochs: 2
+batch_size: 16
 num_workers: 8
 amp: true
 
-log_interval: 50
+log_interval: 200
 eval_interval: 1000
 checkpoint_dir: "checkpoints_ssv2_acr"
 

@@ -1,0 +1,48 @@
+Epochs:   0%|                                                                                                                                                  | 0/2 [00:00<?, ?it/s]/root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/popen_fork.py:66: RuntimeWarning: os.fork() was called. os.fork() is incompatible with multithreaded code, and JAX is multithreaded, so this will likely lead to a deadlock.
+  self.pid = os.fork()                                                                                                                                     | 0/10520 [00:00<?, ?it/s]
+[38;5;247mic[39m[38;5;245m|[39m[38;5;245m [39m[38;5;247mframes[39m[38;5;245m.[39m[38;5;247mshape[39m[38;5;245m:[39m[38;5;245m [39m[38;5;247mtorch[39m[38;5;245m.[39m[38;5;247mSize[39m[38;5;245m([39m[38;5;245m[[39m[38;5;36m16[39m[38;5;245m,[39m[38;5;245m [39m[38;5;36m16[39m[38;5;245m,[39m[38;5;245m [39m[38;5;36m224[39m[38;5;245m,[39m[38;5;245m [39m[38;5;36m224[39m[38;5;245m,[39m[38;5;245m [39m[38;5;36m3[39m[38;5;245m][39m[38;5;245m)[39m
+Epochs:   0%|                                                                                                                                                  | 0/2 [00:03<?, ?it/s]
+jax.errors.SimplifiedTraceback: For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these. 
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/rvm/evals/action_recog/trainer.py", line 399, in <module>
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 395, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 289, in train
+    representation = self._extract_representation(
+  File "/home/rvm/evals/action_recog/trainer.py", line 214, in _extract_representation
+    representation = self._forward_fn(
+  File "/home/rvm/evals/action_recog/trainer.py", line 79, in _forward
+    out = rvm_model.apply(
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 515, in reconstruct
+    source_tokens = jnp.concatenate([cls_token, source_tokens], axis=-2)  # (B, Ts, N+1, D)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/numpy/lax_numpy.py", line 4625, in concatenate
+    arrays_out = [lax.concatenate(arrays_out[i:i+k], axis)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/numpy/lax_numpy.py", line 4625, in <listcomp>
+    arrays_out = [lax.concatenate(arrays_out[i:i+k], axis)
+TypeError: Cannot concatenate arrays with different numbers of dimensions: got (16, 1, 384), (16, 16, 196, 384).
+jax.errors.SimplifiedTraceback: For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/rvm/evals/action_recog/trainer.py", line 399, in <module>
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 395, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 289, in train
+    representation = self._extract_representation(
+  File "/home/rvm/evals/action_recog/trainer.py", line 214, in _extract_representation
+    representation = self._forward_fn(
+  File "/home/rvm/evals/action_recog/trainer.py", line 79, in _forward
+    out = rvm_model.apply(
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 515, in reconstruct
+    source_tokens = jnp.concatenate([cls_token, source_tokens], axis=-2)  # (B, Ts, N+1, D)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/numpy/lax_numpy.py", line 4625, in concatenate
+    arrays_out = [lax.concatenate(arrays_out[i:i+k], axis)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/numpy/lax_numpy.py", line 4625, in <listcomp>
+    arrays_out = [lax.concatenate(arrays_out[i:i+k], axis)
+TypeError: Cannot concatenate arrays with different numbers of dimensions: got (16, 1, 384), (16, 16, 196, 384).

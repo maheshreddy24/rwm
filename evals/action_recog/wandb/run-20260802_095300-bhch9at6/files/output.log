@@ -1,0 +1,52 @@
+Epochs:   0%|                                                                                                                                                  | 0/2 [00:00<?, ?it/s]/root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/popen_fork.py:66: RuntimeWarning: os.fork() was called. os.fork() is incompatible with multithreaded code, and JAX is multithreaded, so this will likely lead to a deadlock.
+  self.pid = os.fork()
+                                                                                                                                                                                     /home/rvm/evals/action_recog/trainer.py:213: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:213.)
+  return torch.from_numpy(np.asarray(representation))                                                                                                      | 0/10520 [00:00<?, ?it/s]
+                                                                                                                                                                                     /root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/popen_fork.py:66: RuntimeWarning: os.fork() was called. os.fork() is incompatible with multithreaded code, and JAX is multithreaded, so this will likely lead to a deadlock.
+  self.pid = os.fork()████▎                                                                                                                    | 999/10520 [07:00<1:03:50,  2.49it/s]
+[epoch 0 step 200] loss 4.9583
+[epoch 0 step 400] loss 4.5363
+[epoch 0 step 600] loss 4.1370
+[epoch 0 step 800] loss 3.2467
+[epoch 0 step 1000] loss 3.1959
+Epochs:   0%|                                                                                                                                                  | 0/2 [08:42<?, ?it/s]
+Traceback (most recent call last):                                                                                                                                                   
+  File "/home/rvm/evals/action_recog/trainer.py", line 418, in <module>                                                                                                              
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 414, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 327, in train
+    self.evaluate()
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+  File "/home/rvm/evals/action_recog/trainer.py", line 355, in evaluate
+    representation = self._extract_representation(
+  File "/home/rvm/evals/action_recog/trainer.py", line 213, in _extract_representation
+    return torch.from_numpy(np.asarray(representation))
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/array.py", line 441, in __array__
+    return np.asarray(self._value, dtype=dtype, **kwds)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/profiler.py", line 354, in wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/array.py", line 644, in _value
+    npy_value, did_copy = self._single_device_array_to_np_array_did_copy()
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/home/rvm/evals/action_recog/trainer.py", line 418, in <module>
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 414, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 327, in train
+    self.evaluate()
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+  File "/home/rvm/evals/action_recog/trainer.py", line 355, in evaluate
+    representation = self._extract_representation(
+  File "/home/rvm/evals/action_recog/trainer.py", line 213, in _extract_representation
+    return torch.from_numpy(np.asarray(representation))
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/array.py", line 441, in __array__
+    return np.asarray(self._value, dtype=dtype, **kwds)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/profiler.py", line 354, in wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/array.py", line 644, in _value
+    npy_value, did_copy = self._single_device_array_to_np_array_did_copy()
+KeyboardInterrupt

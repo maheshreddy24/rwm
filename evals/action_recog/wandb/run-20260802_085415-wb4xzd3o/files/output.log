@@ -1,0 +1,80 @@
+Epochs:   0%|                                                                                                                                                  | 0/2 [00:00<?, ?it/s]/root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/popen_fork.py:66: RuntimeWarning: os.fork() was called. os.fork() is incompatible with multithreaded code, and JAX is multithreaded, so this will likely lead to a deadlock.
+  self.pid = os.fork()                                                                                                                                     | 0/10557 [00:00<?, ?it/s]
+Epochs:   0%|                                                                                                                                                  | 0/2 [00:00<?, ?it/s]
+Traceback (most recent call last):                                                                                                                                                   
+  File "/home/rvm/evals/action_recog/trainer.py", line 396, in <module>
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 392, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 280, in train
+    for frames, labels in tqdm(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/tqdm/std.py", line 1187, in __iter__
+    for obj in iterable:
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 725, in __next__
+    data = self._next_data()
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 1529, in _next_data
+    return self._process_data(data, worker_id)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 1567, in _process_data
+    data.reraise()
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/_utils.py", line 794, in reraise
+    raise exception
+decord._ffi.base.DECORDError: Caught DECORDError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/_utils/worker.py", line 374, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/_utils/fetch.py", line 54, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/_utils/fetch.py", line 54, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/home/rvm/evals/action_recog/ssv2_inf_dataset.py", line 90, in __getitem__
+    frames = self._load_video(self.video_paths[idx])
+  File "/home/rvm/evals/action_recog/ssv2_inf_dataset.py", line 79, in _load_video
+    img = Image.fromarray(vr[idx].asnumpy())
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/decord/video_reader.py", line 104, in __getitem__
+    self.seek_accurate(idx)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/decord/video_reader.py", line 232, in seek_accurate
+    success = _CAPI_VideoReaderSeekAccurate(self._handle, pos)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/decord/_ffi/_ctypes/function.py", line 173, in __call__
+    check_call(_LIB.DECORDFuncCall(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/decord/_ffi/base.py", line 78, in check_call
+    raise DECORDError(err_str)
+decord._ffi.base.DECORDError: [08:54:16] /github/workspace/src/video/ffmpeg/threaded_decoder.cc:292: [08:54:16] /github/workspace/src/video/ffmpeg/threaded_decoder.cc:218: Check failed: avcodec_send_packet(dec_ctx_.get(), pkt.get()) >= 0 (-11 vs. 0) Thread worker: Error sending packet.
+
+Traceback (most recent call last):
+  File "/home/rvm/evals/action_recog/trainer.py", line 396, in <module>
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 392, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 280, in train
+    for frames, labels in tqdm(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/tqdm/std.py", line 1187, in __iter__
+    for obj in iterable:
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 725, in __next__
+    data = self._next_data()
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 1529, in _next_data
+    return self._process_data(data, worker_id)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 1567, in _process_data
+    data.reraise()
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/_utils.py", line 794, in reraise
+    raise exception
+decord._ffi.base.DECORDError: Caught DECORDError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/_utils/worker.py", line 374, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/_utils/fetch.py", line 54, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/_utils/fetch.py", line 54, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/home/rvm/evals/action_recog/ssv2_inf_dataset.py", line 90, in __getitem__
+    frames = self._load_video(self.video_paths[idx])
+  File "/home/rvm/evals/action_recog/ssv2_inf_dataset.py", line 79, in _load_video
+    img = Image.fromarray(vr[idx].asnumpy())
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/decord/video_reader.py", line 104, in __getitem__
+    self.seek_accurate(idx)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/decord/video_reader.py", line 232, in seek_accurate
+    success = _CAPI_VideoReaderSeekAccurate(self._handle, pos)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/decord/_ffi/_ctypes/function.py", line 173, in __call__
+    check_call(_LIB.DECORDFuncCall(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/decord/_ffi/base.py", line 78, in check_call
+    raise DECORDError(err_str)
+decord._ffi.base.DECORDError: [08:54:16] /github/workspace/src/video/ffmpeg/threaded_decoder.cc:292: [08:54:16] /github/workspace/src/video/ffmpeg/threaded_decoder.cc:218: Check failed: avcodec_send_packet(dec_ctx_.get(), pkt.get()) >= 0 (-11 vs. 0) Thread worker: Error sending packet.

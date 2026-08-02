@@ -3,8 +3,8 @@ set -e
 
 BASE=https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/dataset/AIDataset/Something-Something-V2
 
-mkdir -p datasets/ssv2
-cd datasets/ssv2
+mkdir -p evals/datasets/ssv2
+cd evals/datasets/ssv2
 
 echo "Downloading video parts..."
 wget -c $BASE/20bn-something-something-v2-00
