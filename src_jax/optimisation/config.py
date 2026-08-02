@@ -93,6 +93,7 @@ class EMATrainerConfig:
     # misc
     log_interval: int = 50
     eval_interval: int = 1000
+    collapse_interval: int = 500
 
     # wandb
     wandb_project: str = "rvm"

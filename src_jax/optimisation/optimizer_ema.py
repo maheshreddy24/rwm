@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+from src_jax.optimisation.collapse_utills import collapse_test, flatten_collapse_metrics
 import orbax.checkpoint as ocp
 import wandb
 from flax.training import train_state
@@ -181,8 +182,8 @@ def representation_loss(out, target_repr, masked_only=True, eps=1e-6):
       (loss, target_std) where target_std is the mean per-dimension std of the
       pre-normalization targets, i.e. the collapse monitor.
     """
-    pred = out["representation"].astype(jnp.float32)
-    tgt = target_repr.astype(jnp.float32)
+    pred = out["representation"].astype(jnp.float32) # bs, T, N, e
+    tgt = target_repr.astype(jnp.float32) #bs, T, N, E
 
     mu = tgt.mean(axis=-1, keepdims=True)
     var = tgt.var(axis=-1, keepdims=True)
@@ -273,6 +274,30 @@ def make_eval_step(model, masked_only: bool = True):
     return jax.jit(eval_step)
 
 
+def make_collapse_step(model):
+    """Dimensional-collapse diagnostics on the student's predicted representation.
+
+    Kept separate from `train_step` (rather than folded into `representation_loss`)
+    because the SVD in `collapse_test` is only worth paying for every
+    `config.collapse_interval` steps, not every step.
+    """
+
+    def collapse_step(params, batch, rng):
+        mask_rng, state_rng = jax.random.split(rng)
+        out = model.apply(
+            {"params": params},
+            batch["source"],
+            batch["target"],
+            batch["target_deltas"],
+            rng_key=mask_rng,
+            rngs={"default": state_rng},
+            method=model.reconstruct,
+        )
+        return collapse_test(out["representation"].astype(jnp.float32))
+
+    return jax.jit(collapse_step)
+
+
 class Trainer:
     def __init__(
         self,
@@ -333,6 +358,7 @@ class Trainer:
 
         self.train_step_fn = make_train_step(self.model, self.config, self.schedule)
         self.eval_step_fn = make_eval_step(self.model, masked_only=bool(self.config.loss_on_masked_only))
+        self.collapse_step_fn = make_collapse_step(self.model)
 
         wandb_config = dataclasses.asdict(self.config) | {
             **dataclasses.asdict(self.model_config),
@@ -430,6 +456,9 @@ class Trainer:
                         step=self.global_step,
                     )
 
+                if self.global_step % int(self.config.collapse_interval) == 0:
+                    self._log_collapse_metrics(batch)
+
                 if (
                     self.eval_loader is not None
                     and self.global_step % int(self.config.eval_interval) == 0
@@ -447,6 +476,16 @@ class Trainer:
         batch = _to_numpy_batch(batch)
         self.state, metrics, self.rng = self.train_step_fn(self.state, batch, self.rng)
         return {k: float(v) for k, v in metrics.items()}
+
+    def _log_collapse_metrics(self, batch):
+        batch = _to_numpy_batch(batch)
+        self.rng, step_rng = jax.random.split(self.rng)
+        metrics = self.collapse_step_fn(self.state.params, batch, step_rng)
+        flat = flatten_collapse_metrics(metrics)
+        wandb.log(
+            {f"train/collapse/{k}": v for k, v in flat.items()},
+            step=self.global_step,
+        )
 
     def _evaluate_and_log(self):
         metrics = self.eval()
