@@ -1,15 +1,36 @@
-
-
 device: "cuda:0"
 seed: 42
 
-lr: 3e-4
-weight_decay: 1e-4
+dataset_config_path: "/home/mahesh/rvm/evals/action_recog/dataset_config.yaml"
+# TODO: point this at your local restored-params npz (previous path referenced
+# a different machine's filesystem: /home/geometric-ssl/...).
+restored_params_path: "/home/mahesh/rvm/evals/ckpts/pretrain_rvm_small16_256_204031069.npz"
 
+# Optimization fixed across all tasks/models (4D scaling paper, Carreira et al.):
+# 1.28M training examples, batch size 32 -> 40k steps, AdamW, wd 1e-4,
+# LR swept over {1e-4, 3e-4, 1e-3}, 1k-step linear warmup, cosine decay to 1e-7.
+lr: 3.0e-4
+weight_decay: 1.0e-4
 betas: [0.9, 0.999]
-eps: 1e-8
+eps: 1.0e-8
 
-warmup_ratio: 0.05
-wand_project: 'rvm-action-recog'
-checkpoints_dir: 'checkpoints_ssv2_acr'
-restored_params_path: '/home/geometric-ssl/src/evals/ckpts/pretrain_rvm_small16_256_204031069.npz'
+total_steps: 40000
+warmup_steps: 1000
+min_lr: 1.0e-7
+
+batch_size: 32
+num_workers: 8
+amp: true
+
+log_interval: 50
+eval_interval: 1000
+checkpoint_dir: "checkpoints_ssv2_acr"
+
+wandb_project: "rvm-action-recog"
+wandb_name: "ssv2-readout-run1"
+
+# SSv2 readout head (paper supp. Table 6)
+readout_in_dim: 384
+readout_dim: 768
+readout_num_heads: 12
+readout_num_classes: 174

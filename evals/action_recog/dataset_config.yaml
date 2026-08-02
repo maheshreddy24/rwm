@@ -7,3 +7,6 @@ labels_json: /home/mahesh/rvm/evals/action_recog/datasets/ssv2/labels/labels.jso
 
 
 videos_dir: /home/mahesh/rvm/evals/action_recog/datasets/ssv2/videos
+
+num_frames: 16
+frame_stride: 4
