@@ -11,3 +11,5 @@ flax
 decord
 einops
 tqdm
+
+wandb

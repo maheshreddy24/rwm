@@ -26,6 +26,7 @@ class TrainerConfig:
 
     # schedule: linear warmup -> cosine decay, stepped every optimizer step
     num_epochs: int = 2
+    epochs = 4
     warmup_steps: int = 500
     min_lr: float = 1e-6
 
@@ -65,7 +66,8 @@ class EMATrainerConfig:
     init_params_path: Optional[str] = None
 
     # budget
-    total_steps: int = 30000
+    # total_steps: int = 30000
+    epochs = 4
     grad_accum: int = 1
 
     # optimizer -- AdamW with the betas/wd used by MAE-style ViT recipes
