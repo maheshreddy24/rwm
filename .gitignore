@@ -14,6 +14,8 @@ evals/pusht
 checkpoints_ema_jax
 
 */wandb/*
+*.mp4
+*.webm
 *.log
 evals/action_recog/datasets
 *.csv

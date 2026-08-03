@@ -19,13 +19,12 @@ class RVMDataset(Dataset):
     """Samples (source frames, target frames, target_deltas) triples for `RVM.forward`.
 
     Config keys:
-        video_csv:          path to a csv with columns [path, num_frames, fps, duration_sec]
+        video_csv:          path to a csv with a `path` column (extra columns ignored)
         num_source_frames:  Ts, number of context frames fed to the recurrent core
         num_target_frames:  Tt, number of future frames to reconstruct
         max_delta:          inclusive upper bound on the source->target frame gap,
                              must match RVM(max_delta=...) since deltas index an embedding table
         frame_size:         (H, W) to resize decoded frames to, default (256, 256)
-        min_duration_sec:   drop videos shorter than this, default 4
 
     Source frames are always Ts consecutive frames; target frames are sampled at
     random (unsorted) gaps of [4, max_delta] after the last source frame. A single
@@ -33,37 +32,34 @@ class RVMDataset(Dataset):
     every source and target frame, so the crop doesn't jitter between frames.
     """
 
-    def __init__(self, config, split):
+    def __init__(self, config):
         self.config = config
-        self.video_csv = config[f"{split}_csv"]
+        self.video_csv = config["video_csv"]
         self.num_source_frames = config["num_source_frames"]
         self.num_target_frames = config["num_target_frames"]
         self.max_delta = config.get("max_delta", 48)
         self.frame_size = tuple(config.get("frame_size", FRAME_SIZE))
-        min_duration_sec = config.get("min_duration_sec", 4)
 
         self.rng = np.random.default_rng()
 
-        data_paths = []
-        from icecream import ic
-        with open(self.video_csv, mode="r", newline="", encoding="utf-8") as file:
-            reader = csv.reader(file)
-            # print(reader[0])
-            for i, row in enumerate(reader):
-                # ic(row)
-                # if i > 0 and float(row[-2]) > min_duration_sec: # path, frames, fps, duration, source
-                #     data_paths.append(row)
-                data_paths.append(row) # path, source
+        self.data_paths = []
 
-        self.data_paths = data_paths
-        print(f"total samples: {len(self.data_paths)}")
+        with open(self.video_csv, mode="r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                path = row["path"].strip()
+                if path:
+                    self.data_paths.append(path)
+
+        print(f"Loaded {len(self.data_paths)} videos.")
 
     def _open_video(self, fname):
         if not os.path.exists(fname):
             return None
         try:
             return VideoReader(fname, num_threads=1, ctx=cpu(0))
-        except Exception:
+        except Exception as e:
+            print(f"[RVMDataset] failed to open {fname}: {e}")
             return None
 
     def _sample_indices(self, total_frames: int):
@@ -76,7 +72,7 @@ class RVMDataset(Dataset):
         if high <= Ts - 1:
             return None
 
-        last_src_idx = self.rng.integers(Ts - 1, high)
+        last_src_idx = int(self.rng.integers(Ts - 1, high))
         source_idx = np.arange(last_src_idx - Ts + 1, last_src_idx + 1, dtype=np.int64)
 
         deltas = self.rng.integers(4, self.max_delta + 1, size=Tt).astype(np.int64)
@@ -121,7 +117,12 @@ class RVMDataset(Dataset):
         out = np.empty((T, self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
         for t in range(T):
             frame = buffer[t, top : top + crop_h, left : left + crop_w]
-            frame = cv2.resize(frame, self.frame_size, interpolation=cv2.INTER_CUBIC)
+            # cv2.resize takes (W, H); frame_size is (H, W)
+            frame = cv2.resize(
+                frame,
+                (self.frame_size[1], self.frame_size[0]),
+                interpolation=cv2.INTER_CUBIC,
+            )
             if do_flip:
                 frame = frame[:, ::-1]
             out[t] = frame
@@ -129,20 +130,39 @@ class RVMDataset(Dataset):
 
     def _load_frames(self, fname):
         vr = self._open_video(fname)
-        if vr is None or len(vr) < 2:
+        if vr is None:
             return None
 
-        total_frames = len(vr)
-        sampled = self._sample_indices(total_frames)
-        if sampled is None:
-            return None
-        source_idx, target_idx, deltas = sampled
+        try:
+            total_frames = len(vr)
+            sampled = self._sample_indices(total_frames)
+            if sampled is None:
+                return None
+            source_idx, target_idx, deltas = sampled
 
-        vr.seek(0)
-        all_idx = np.concatenate([source_idx, target_idx])
-        buffer = vr.get_batch(all_idx).asnumpy()  # [Ts+Tt, H, W, 3] uint8
+            all_idx = np.concatenate([source_idx, target_idx])
+
+            # Decord's random access on webm/VP9 (SSV2) is slow and flaky with
+            # non-monotonic indices. Decode in sorted order, then restore the
+            # original (unsorted) order afterwards.
+            order = np.argsort(all_idx, kind="stable")
+            sorted_idx = np.clip(all_idx[order], 0, total_frames - 1)
+
+            try:
+                buffer = vr.get_batch(sorted_idx).asnumpy()  # [Ts+Tt, H, W, 3] uint8
+            except Exception as e:
+                print(f"[RVMDataset] decode failed for {fname}: {e}")
+                return None
+
+            inverse = np.empty_like(order)
+            inverse[order] = np.arange(len(order))
+            buffer = buffer[inverse]
+        finally:
+            # Decord VideoReaders leak memory in long-lived DataLoader workers
+            # if not released explicitly.
+            del vr
+
         buffer = self._augment(buffer)
-
         frames = buffer.astype(np.float32) / 255.0  # [Ts+Tt, H, W, 3]
 
         Ts = self.num_source_frames
@@ -151,19 +171,22 @@ class RVMDataset(Dataset):
         return source, target, deltas
 
     def __getitem__(self, index):
-        video_path = self.data_paths[index][0]
+        # Try up to 20 times to find a valid sample.
+        for _ in range(20):
+            video_path = self.data_paths[index]
+            sample = self._load_frames(video_path)
 
-        sample = self._load_frames(video_path)
-        if sample is None:
-            # Invalid sample, retry with a random one.
-            return self.__getitem__(int(self.rng.integers(0, len(self))))
+            if sample is not None:
+                source, target, target_deltas = sample
+                return {
+                    "source": source,
+                    "target": target,
+                    "target_deltas": target_deltas,
+                }
 
-        source, target, target_deltas = sample
-        return {
-            "source": source,
-            "target": target,
-            "target_deltas": target_deltas,
-        }
+            index = int(self.rng.integers(len(self)))
+
+        raise RuntimeError("Could not load a valid video after 20 attempts.")
 
     def __len__(self):
         return len(self.data_paths)
@@ -178,12 +201,11 @@ class RVMDataset(Dataset):
 
 
 if __name__ == "__main__":
-    # config_path = os.path.join(os.path.dirname(__file__), "..", "..", "configs", "dataset.yaml")
-    config_path = '/home/rvm/configs/dataset.yaml'
+    config_path = os.path.join(os.path.dirname(__file__), "..", "..", "configs", "dataset.yaml")
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
-    dataset = RVMDataset(config, 'val')
+    dataset = RVMDataset(config)
     loader = torch.utils.data.DataLoader(
         dataset, batch_size=2, shuffle=True, collate_fn=RVMDataset.collate_fn
     )
@@ -192,4 +214,3 @@ if __name__ == "__main__":
     ic(batch["source"].shape)
     ic(batch["target"].shape)
     ic(batch["target_deltas"].shape)
-    ic(batch['target_deltas'][0, :])
