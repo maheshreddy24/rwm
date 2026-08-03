@@ -52,12 +52,14 @@ class TrainerConfig:
 class EMATrainerConfig:
     """Hyperparameters for the EMA-teacher `Trainer` in `optimizer_ema.py`.
 
-    Unlike `TrainerConfig`, budget and schedule are expressed in steps (dataloader
-    batches), not epochs: `total_steps` is the number of batches to consume, and
-    `warmup_ratio`/`ema_ramp` are fractions of that budget. `grad_accum` groups
-    every `grad_accum` batches into one optimizer update (via `optax.MultiSteps`),
-    so the LR/EMA schedules — which tick once per optimizer update — see
-    `total_steps // grad_accum` steps, not `total_steps`.
+    Budget and schedule are expressed in epochs, not steps: `epochs` is the number
+    of full passes over `train_loader`, and `warmup_ratio`/`ema_ramp` are fractions
+    of the resulting step budget. `grad_accum` groups every `grad_accum` batches
+    into one optimizer update (via `optax.MultiSteps`), so the LR/EMA schedules —
+    which tick once per optimizer update — see `total_steps // grad_accum` steps.
+
+    `total_steps` is not user-configured: `Trainer` derives it from
+    `epochs * len(train_loader)` and fills it in before building the schedules.
     """
 
     # runtime
@@ -66,8 +68,8 @@ class EMATrainerConfig:
     init_params_path: Optional[str] = None
 
     # budget
-    # total_steps: int = 30000
-    epochs = 4
+    epochs: int = 4
+    total_steps: int = 0  # derived by Trainer._reconcile_total_steps(); do not set in config
     grad_accum: int = 1
 
     # optimizer -- AdamW with the betas/wd used by MAE-style ViT recipes

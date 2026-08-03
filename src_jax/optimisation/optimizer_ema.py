@@ -470,9 +470,9 @@ class Trainer:
     ):
         self.model_config = model_config
         self.config = config or EMATrainerConfig()
-        # FIX: was `model_config['epochs']`, which contradicted the attribute access
-        # used everywhere else for the same object.
-        self.epochs = int(cfg_get(model_config, "epochs"))
+        # FIX: was `cfg_get(model_config, "epochs")` -- epochs is a trainer/schedule
+        # concept and lives on `config` (EMATrainerConfig), not the model config.
+        self.epochs = int(cfg_get(self.config, "epochs"))
         self.current_epoch = 0
         # FIX: `global_step` was only ever assigned inside `resume()`, so a fresh run
         # raised AttributeError the first time it checkpointed or evaluated.
