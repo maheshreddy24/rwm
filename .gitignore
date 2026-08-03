@@ -16,3 +16,4 @@ checkpoints_ema_jax
 */wandb/*
 *.log
 evals/action_recog/datasets
+*.csv
