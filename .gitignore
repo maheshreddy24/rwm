@@ -17,3 +17,7 @@ checkpoints_ema_jax
 *.log
 evals/action_recog/datasets
 *.csv
+
+
+datasets/kinetics_dataset
+datasets/ssv2
