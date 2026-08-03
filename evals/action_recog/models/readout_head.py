@@ -8,6 +8,7 @@ Structure per supp. sec. A.2 / A.2.1 and Table 6:
 """
 
 import torch
+from icecream import ic
 import torch.nn as nn
 
 
@@ -77,6 +78,8 @@ class Readout(nn.Module):
     def forward(self, feats):
         # feats: (B, T, K, C) from a frozen backbone layer
         B, T, K, C = feats.shape
+        # ic(feats.shape)
+        # ic(self.temp_emb.shape)
 
         x = self.norm_in(feats) + self.temp_emb        # (B, T, K, C)
         x = x.reshape(B, T * K, C)                     # kv sequence

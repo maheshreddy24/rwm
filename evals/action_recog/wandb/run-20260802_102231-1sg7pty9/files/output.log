@@ -1,0 +1,177 @@
+Epochs:   0%|                                             | 0/2 [00:00<?, ?it/s]/root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/popen_fork.py:66: RuntimeWarning: os.fork() was called. os.fork() is incompatible with multithreaded code, and JAX is multithreaded, so this will likely lead to a deadlock.
+  self.pid = os.fork()
+                                                                                Exception ignored in: <function _MultiProcessingDataLoaderIter.__del__ at 0x776199f5c670>
+Traceback (most recent call last):                                              
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 1704, in __del__
+    self._shutdown_workers()
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 1679, in _shutdown_workers
+    w.join(timeout=_utils.MP_STATUS_CHECK_INTERVAL)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/process.py", line 149, in join
+    res = self._popen.wait(timeout)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/popen_fork.py", line 40, in wait
+    if not wait([self.sentinel], timeout):
+  File "/root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/connection.py", line 931, in wait
+    ready = selector.select(timeout)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/selectors.py", line 416, in select
+    fd_event_list = self._selector.poll(timeout)
+KeyboardInterrupt:
+Exception ignored in: <generator object tqdm.__iter__ at 0x776038315930>
+Traceback (most recent call last):
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/tqdm/std.py", line 1188, in __iter__
+    yield obj
+KeyboardInterrupt:
+Epochs:   0%|                                             | 0/2 [00:11<?, ?it/s]
+Traceback (most recent call last):
+  File "/home/rvm/evals/action_recog/trainer.py", line 418, in <module>
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 414, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 285, in train
+    representation = self._extract_representation(
+  File "/home/rvm/evals/action_recog/trainer.py", line 210, in _extract_representation
+    representation = self._forward_fn(
+  File "/home/rvm/evals/action_recog/trainer.py", line 79, in _forward
+    out = rvm_model.apply(
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 551, in reconstruct
+    encoded, state = self.rnn_core(
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 241, in __call__
+    h = self.transformer(inputs, inputs_kv=reset_gate * self.state_layer_norm(state))
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 328, in __call__
+    inputs = self.xa_blocks[i](inputs, inputs_kv)
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 359, in __call__
+    x = x + self.attention(self.attention_norm(x))
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 291, in __call__
+    key = dense('key', inputs_k, qk_features)
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 281, in dense
+    return nn.DenseGeneral(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/flax/linen/linear.py", line 210, in __call__
+    out += bias
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/numpy/array_methods.py", line 1083, in op
+    return getattr(self.aval, f"_{name}")(self, *args)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/numpy/array_methods.py", line 583, in deferring_binary_op
+    return binary_op(*args)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/numpy/ufunc_api.py", line 182, in __call__
+    return call(*args)
+jax._src.source_info_util.JaxStackTraceBeforeTransformation: KeyboardInterrupt
+
+The preceding stack trace is the source of the JAX operation that, once transformed by JAX, triggered the following exception.
+
+--------------------
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/rvm/evals/action_recog/trainer.py", line 418, in <module>
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 414, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 285, in train
+    representation = self._extract_representation(
+  File "/home/rvm/evals/action_recog/trainer.py", line 210, in _extract_representation
+    representation = self._forward_fn(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/traceback_util.py", line 182, in reraise_with_filtered_traceback
+    return fun(*args, **kwargs)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/pjit.py", line 292, in cache_miss
+    executable, pgle_profiler) = _python_pjit_helper(fun, jit_info, *args, **kwargs)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/pjit.py", line 153, in _python_pjit_helper
+    out_flat, compiled, profiler = _pjit_call_impl_python(*args_flat, **p.params)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/pjit.py", line 1846, in _pjit_call_impl_python
+    compiled = _resolve_and_lower(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/pjit.py", line 1813, in _resolve_and_lower
+    return _pjit_lower(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/pjit.py", line 1931, in _pjit_lower
+    return _pjit_lower_cached(*args, **kwargs)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/pjit.py", line 1951, in _pjit_lower_cached
+    return pxla.lower_sharding_computation(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/profiler.py", line 354, in wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/interpreters/pxla.py", line 2321, in lower_sharding_computation
+    nreps, tuple_args, shape_poly_state) = _cached_lowering_to_hlo(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/interpreters/pxla.py", line 1912, in _cached_lowering_to_hlo
+    lowering_result = mlir.lower_jaxpr_to_module(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/interpreters/mlir.py", line 1274, in lower_jaxpr_to_module
+    lower_jaxpr_to_fun(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/interpreters/mlir.py", line 1766, in lower_jaxpr_to_fun
+    out_vals, tokens_out = jaxpr_subcomp(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/interpreters/mlir.py", line 2010, in jaxpr_subcomp
+    with (source_info_util.user_context(eqn.source_info.traceback), loc,
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/core.py", line 340, in __exit__
+    def __exit__(self, exc_type, exc_value, traceback):
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/home/rvm/evals/action_recog/trainer.py", line 418, in <module>
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 414, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 285, in train
+    representation = self._extract_representation(
+  File "/home/rvm/evals/action_recog/trainer.py", line 210, in _extract_representation
+    representation = self._forward_fn(
+  File "/home/rvm/evals/action_recog/trainer.py", line 79, in _forward
+    out = rvm_model.apply(
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 551, in reconstruct
+    encoded, state = self.rnn_core(
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 241, in __call__
+    h = self.transformer(inputs, inputs_kv=reset_gate * self.state_layer_norm(state))
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 328, in __call__
+    inputs = self.xa_blocks[i](inputs, inputs_kv)
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 359, in __call__
+    x = x + self.attention(self.attention_norm(x))
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 291, in __call__
+    key = dense('key', inputs_k, qk_features)
+  File "/home/rvm/evals/action_recog/models/rvm_jax.py", line 281, in dense
+    return nn.DenseGeneral(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/flax/linen/linear.py", line 210, in __call__
+    out += bias
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/numpy/array_methods.py", line 1083, in op
+    return getattr(self.aval, f"_{name}")(self, *args)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/numpy/array_methods.py", line 583, in deferring_binary_op
+    return binary_op(*args)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/numpy/ufunc_api.py", line 182, in __call__
+    return call(*args)
+jax._src.source_info_util.JaxStackTraceBeforeTransformation: KeyboardInterrupt
+
+The preceding stack trace is the source of the JAX operation that, once transformed by JAX, triggered the following exception.
+
+--------------------
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/rvm/evals/action_recog/trainer.py", line 418, in <module>
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 414, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 285, in train
+    representation = self._extract_representation(
+  File "/home/rvm/evals/action_recog/trainer.py", line 210, in _extract_representation
+    representation = self._forward_fn(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/traceback_util.py", line 182, in reraise_with_filtered_traceback
+    return fun(*args, **kwargs)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/pjit.py", line 292, in cache_miss
+    executable, pgle_profiler) = _python_pjit_helper(fun, jit_info, *args, **kwargs)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/pjit.py", line 153, in _python_pjit_helper
+    out_flat, compiled, profiler = _pjit_call_impl_python(*args_flat, **p.params)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/pjit.py", line 1846, in _pjit_call_impl_python
+    compiled = _resolve_and_lower(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/pjit.py", line 1813, in _resolve_and_lower
+    return _pjit_lower(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/pjit.py", line 1931, in _pjit_lower
+    return _pjit_lower_cached(*args, **kwargs)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/pjit.py", line 1951, in _pjit_lower_cached
+    return pxla.lower_sharding_computation(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/profiler.py", line 354, in wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/interpreters/pxla.py", line 2321, in lower_sharding_computation
+    nreps, tuple_args, shape_poly_state) = _cached_lowering_to_hlo(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/interpreters/pxla.py", line 1912, in _cached_lowering_to_hlo
+    lowering_result = mlir.lower_jaxpr_to_module(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/interpreters/mlir.py", line 1274, in lower_jaxpr_to_module
+    lower_jaxpr_to_fun(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/interpreters/mlir.py", line 1766, in lower_jaxpr_to_fun
+    out_vals, tokens_out = jaxpr_subcomp(
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/interpreters/mlir.py", line 2010, in jaxpr_subcomp
+    with (source_info_util.user_context(eqn.source_info.traceback), loc,
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/core.py", line 340, in __exit__
+    def __exit__(self, exc_type, exc_value, traceback):
+KeyboardInterrupt

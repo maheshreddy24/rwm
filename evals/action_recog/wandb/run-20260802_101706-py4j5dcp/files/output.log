@@ -1,0 +1,35 @@
+Epochs:   0%|                                             | 0/2 [00:00<?, ?it/s]/root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/popen_fork.py:66: RuntimeWarning: os.fork() was called. os.fork() is incompatible with multithreaded code, and JAX is multithreaded, so this will likely lead to a deadlock.
+  self.pid = os.fork()
+                                                                                /home/rvm/evals/action_recog/trainer.py:213: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:213.)
+  return torch.from_numpy(np.asarray(representation))   | 0/836 [00:00<?, ?it/s]
+[38;5;247mic[39m[38;5;245m|[39m[38;5;245m [39m[38;5;247mfeats[39m[38;5;245m.[39m[38;5;247mshape[39m[38;5;245m:[39m[38;5;245m [39m[38;5;247mtorch[39m[38;5;245m.[39m[38;5;247mSize[39m[38;5;245m([39m[38;5;245m[[39m[38;5;36m16[39m[38;5;245m,[39m[38;5;245m [39m[38;5;36m64[39m[38;5;245m,[39m[38;5;245m [39m[38;5;36m196[39m[38;5;245m,[39m[38;5;245m [39m[38;5;36m384[39m[38;5;245m][39m[38;5;245m)[39m
+[38;5;247mic[39m[38;5;245m|[39m[38;5;245m [39m[38;5;32mself[39m[38;5;245m.[39m[38;5;247mtemp_emb[39m[38;5;245m.[39m[38;5;247mshape[39m[38;5;245m:[39m[38;5;245m [39m[38;5;247mtorch[39m[38;5;245m.[39m[38;5;247mSize[39m[38;5;245m([39m[38;5;245m[[39m[38;5;36m1[39m[38;5;245m,[39m[38;5;245m [39m[38;5;36m16[39m[38;5;245m,[39m[38;5;245m [39m[38;5;36m1[39m[38;5;245m,[39m[38;5;245m [39m[38;5;36m384[39m[38;5;245m][39m[38;5;245m)[39m
+Epochs:   0%|                                             | 0/2 [02:38<?, ?it/s]
+Traceback (most recent call last):                                              
+  File "/home/rvm/evals/action_recog/trainer.py", line 418, in <module>
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 414, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 294, in train
+    logits = self.model(representation)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/rvm/evals/action_recog/models/readout_head.py", line 84, in forward
+    x = self.norm_in(feats) + self.temp_emb        # (B, T, K, C)
+RuntimeError: The size of tensor a (64) must match the size of tensor b (16) at non-singleton dimension 1
+Traceback (most recent call last):
+  File "/home/rvm/evals/action_recog/trainer.py", line 418, in <module>
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 414, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 294, in train
+    logits = self.model(representation)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/rvm/evals/action_recog/models/readout_head.py", line 84, in forward
+    x = self.norm_in(feats) + self.temp_emb        # (B, T, K, C)
+RuntimeError: The size of tensor a (64) must match the size of tensor b (16) at non-singleton dimension 1

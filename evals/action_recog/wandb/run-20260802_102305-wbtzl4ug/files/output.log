@@ -1,0 +1,52 @@
+Epochs:   0%|                                             | 0/2 [00:00<?, ?it/s]/root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/popen_fork.py:66: RuntimeWarning: os.fork() was called. os.fork() is incompatible with multithreaded code, and JAX is multithreaded, so this will likely lead to a deadlock.
+  self.pid = os.fork()
+                                                                                /home/rvm/evals/action_recog/trainer.py:213: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:213.)
+  return torch.from_numpy(np.asarray(representation))  | 0/5260 [00:00<?, ?it/s]
+                                                                                Exception ignored in: <function _MultiProcessingDataLoaderIter.__del__ at 0x78e93d05c670>
+Traceback (most recent call last):                                              
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 1704, in __del__
+    self._shutdown_workers()
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 1679, in _shutdown_workers
+    w.join(timeout=_utils.MP_STATUS_CHECK_INTERVAL)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/process.py", line 149, in join
+    res = self._popen.wait(timeout)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/popen_fork.py", line 40, in wait
+    if not wait([self.sentinel], timeout):
+  File "/root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/connection.py", line 931, in wait
+    ready = selector.select(timeout)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/selectors.py", line 416, in select
+    fd_event_list = self._selector.poll(timeout)
+KeyboardInterrupt:
+Epochs:   0%|                                             | 0/2 [01:25<?, ?it/s]
+Traceback (most recent call last):
+  File "/home/rvm/evals/action_recog/trainer.py", line 418, in <module>
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 414, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 285, in train
+    representation = self._extract_representation(
+  File "/home/rvm/evals/action_recog/trainer.py", line 213, in _extract_representation
+    return torch.from_numpy(np.asarray(representation))
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/array.py", line 441, in __array__
+    return np.asarray(self._value, dtype=dtype, **kwds)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/profiler.py", line 354, in wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/array.py", line 644, in _value
+    npy_value, did_copy = self._single_device_array_to_np_array_did_copy()
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/home/rvm/evals/action_recog/trainer.py", line 418, in <module>
+    main()
+  File "/home/rvm/evals/action_recog/trainer.py", line 414, in main
+    trainer.train()
+  File "/home/rvm/evals/action_recog/trainer.py", line 285, in train
+    representation = self._extract_representation(
+  File "/home/rvm/evals/action_recog/trainer.py", line 213, in _extract_representation
+    return torch.from_numpy(np.asarray(representation))
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/array.py", line 441, in __array__
+    return np.asarray(self._value, dtype=dtype, **kwds)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/profiler.py", line 354, in wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/gssl/lib/python3.10/site-packages/jax/_src/array.py", line 644, in _value
+    npy_value, did_copy = self._single_device_array_to_np_array_did_copy()
+KeyboardInterrupt

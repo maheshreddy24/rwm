@@ -1,0 +1,82 @@
+Epochs:   0%|                                             | 0/2 [00:00<?, ?it/s]/root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/popen_fork.py:66: RuntimeWarning: os.fork() was called. os.fork() is incompatible with multithreaded code, and JAX is multithreaded, so this will likely lead to a deadlock.
+  self.pid = os.fork()
+                                                                                /home/rvm/evals/action_recog/trainer.py:213: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:213.)
+  return torch.from_numpy(np.asarray(representation))  | 0/5260 [00:00<?, ?it/s]
+                                                                                     /root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/popen_fork.py:66: RuntimeWarning: os.fork() was called. os.fork() is incompatible with multithreaded code, and JAX is multithreaded, so this will likely lead to a deadlock.
+  self.pid = os.fork()                       | 999/5260 [07:15<28:58,  2.45it/s]
+[epoch 0 step 200] loss 4.6428
+[epoch 0 step 400] loss 3.6337
+[epoch 0 step 600] loss 3.0532
+[epoch 0 step 800] loss 3.0769
+[epoch 0 step 1000] loss 2.0195
+Eval:   0%|                                                  | 0/772 [00:00<?, ?it/s][34m[1mwandb[0m: [33mWARNING[0m Tried to log to step 0 that is less than the current step 1000. Steps must be monotonically increasing, so this data will be ignored. See https://wandb.me/define-metric to log data out of order.
+                                                                                [34m[1mwandb[0m: [33mWARNING[0m Tried to log to step 0 that is less than the current step 2000. Steps must be monotonically increasing, so this data will be ignored. See https://wandb.me/define-metric to log data out of order.
+Epoch 0:  38%|██████████▎                | 2000/5260 [23:39<76:53:44, 84.92s/it]     
+[epoch 0] eval loss 2.8986 acc 0.2818
+[epoch 0 step 1200] loss 2.5563
+[epoch 0 step 1400] loss 2.6644
+[epoch 0 step 1600] loss 2.4751
+[epoch 0 step 1800] loss 2.6701
+[epoch 0 step 2000] loss 2.4802
+[34m[1mwandb[0m: [33mWARNING[0m Tried to log to step 0 that is less than the current step 3000. Steps must be monotonically increasing, so this data will be ignored. See https://wandb.me/define-metric to log data out of order.
+[epoch 0] eval loss 2.5193 acc 0.3596
+[epoch 0 step 2200] loss 2.0730
+[epoch 0 step 2400] loss 2.5784
+[epoch 0 step 2600] loss 1.9305
+[epoch 0 step 2800] loss 3.0453
+[epoch 0 step 3000] loss 1.7442
+[34m[1mwandb[0m: [33mWARNING[0m Tried to log to step 0 that is less than th[34m[1mwandb[0m: [33mWARNING[0m Tried to log to step 0 that is less than the current step 5000. Steps must be monotonically increasing, so this data will be ignored. See https://wandb.me/define-metric to log data out of order.
+[epoch 0] eval loss 2.3872 acc 0.3954
+[epoch 0 step 3200] loss 1.8704
+[epoch 0 step 3400] loss 1.9429
+[epoch 0 step 3600] loss 2.0423
+[epoch 0 step 3800] loss 1.2783
+[epoch 0 step 4000] loss 2.2131
+Epochs:  50%|█████████████████▌                 | 1/2 [59:03<59:03, 3543.50s/it][34m[1mwandb[0m: [33mWARNING[0m Tried to log to step 1 that is less than the current step 6000. Steps must be monotonically increasing, so this data will be ignored. See https://wandb.me/define-metric to log data out of order.
+[epoch 0] eval loss 2.3258 acc 0.3997
+[epoch 0 step 4200] loss 1.8315
+[epoch 0 step 4400] loss 2.4476
+[epoch 0 step 4600] loss 1.5072
+[epoch 0 step 4800] loss 1.8430
+[epoch 0 step 5000] loss 1.3382
+Epoch 1:  14%|████▎                          | 739/5260 [04:54<30:26,  2.48it/s][34m[1mwandb[0m: [33mWARNING[0m Tried to log to step 1 that is less than the current step 7000. Steps must be monotonically increasing, so this data will be ignored. See https://wandb.me/define-metric to log data out of order.
+[epoch 0] eval loss 2.2290 acc 0.4250
+[epoch 0 step 5200] loss 1.8846
+[epoch 0] average train loss: 2.4573
+[epoch 1 step 5400] loss 1.1037
+[epoch 1 step 5600] loss 1.8772
+[epoch 1 step 5800] loss 1.4704
+[epoch 1 step 6000] loss 1.4689
+Epoch 1:  33%|█████████▉                    | 1739/5260 [16:01<23:39,  2.48it/s]     [34m[1mwandb[0m: [33mWARNING[0m Tried to log to step 1 that is less than the current step 8000. Steps must be monotonically increasing, so this data will be ignored. See https://wandb.me/define-metric to log data out of order.
+[epoch 1] eval loss 2.1762 acc 0.4499
+[epoch 1 step 6200] loss 1.6185
+[epoch 1 step 6400] loss 1.4839
+[epoch 1 step 6600] loss 1.4588
+[epoch 1 step 6800] loss 0.8891
+[epoch 1 step 7000] loss 1.3093
+Epoch 1:  52%|███████████████▌              | 2739/5260 [27:08<16:51,  2.49it/s]     [34m[1mwandb[0m: [33mWARNING[0m Tried to log to step 1 that is less than the current step 9000. Steps must be monotonically increasing, so this data will be ignored. See https://wandb.me/define-metric to log data out of order.
+[epoch 1] eval loss 2.1351 acc 0.4553
+[epoch 1 step 7200] loss 1.6237
+[epoch 1 step 7400] loss 1.2808
+[epoch 1 step 7600] loss 1.8618
+[epoch 1 step 7800] loss 1.5998
+[epoch 1 step 8000] loss 1.5834
+Epoch 1:  71%|█████████████████████▎        | 3739/5260 [38:16<10:14,  2.48it/s][34m[1mwandb[0m: [33mWARNING[0m Tried to log to step 1 that is less than the current step 10000. Steps must be monotonically increasing, so this data will be ignored. See https://wandb.me/define-metric to log data out of order.
+[epoch 1] eval loss 2.0702 acc 0.4643
+[epoch 1 step 8200] loss 1.5921
+[epoch 1 step 8400] loss 1.7497
+[epoch 1 step 8600] loss 1.8011
+[epoch 1 step 8800] loss 1.7293
+[epoch 1 step 9000] loss 1.1240
+Epochs: 100%|█████████████████████████████████| 2/2 [1:56:33<00:00, 3496.53s/it]     
+[epoch 1] eval loss 2.0479 acc 0.4729
+[epoch 1 step 9200] loss 1.1051
+[epoch 1 step 9400] loss 1.5145
+[epoch 1 step 9600] loss 1.3306
+[epoch 1 step 9800] loss 1.3427
+[epoch 1 step 10000] loss 1.7559
+                                                                                
+[epoch 1] eval loss 2.0168 acc 0.4751
+[epoch 1 step 10200] loss 1.0320
+[epoch 1 step 10400] loss 1.9413
+[epoch 1] average train loss: 1.4354

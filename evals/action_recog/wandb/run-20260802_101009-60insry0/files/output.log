@@ -1,0 +1,6 @@
+Epochs:   0%|                                                                | 0/2 [00:00<?, ?it/s]/root/miniconda3/envs/gssl/lib/python3.10/multiprocessing/popen_fork.py:66: RuntimeWarning: os.fork() was called. os.fork() is incompatible with multithreaded code, and JAX is multithreaded, so this will likely lead to a deadlock.
+  self.pid = os.fork()
+Epochs: 100%|████████████████████████████████████████████████████████| 2/2 [00:01<00:00,  1.59it/s]
+                           
+[epoch 0] average train loss: 0.0000
+[epoch 1] average train loss: 0.0000

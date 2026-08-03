@@ -1,0 +1,21 @@
+{
+  "os":  "Linux-6.8.0-100-generic-x86_64-with-glibc2.35",
+  "python":  "CPython 3.10.20",
+  "startedAt":  "2026-08-02T12:23:19.017138Z",
+  "args":  [
+    "--resume",
+    "checkpoints_ssv2_acr/exp_20260802_102446/final.pt"
+  ],
+  "program":  "/home/rvm/evals/action_recog/trainer.py",
+  "codePath":  "evals/action_recog/trainer.py",
+  "codePathLocal":  "trainer.py",
+  "git":  {
+    "remote":  "https://github.com/maheshreddy24/rvm.git",
+    "commit":  "20a78ca00e07e241819656bd0e889dd10c96b474"
+  },
+  "email":  "maheshreddy0299@gmail.com",
+  "root":  "/home/rvm/evals/action_recog",
+  "host":  "c3ba5455a896",
+  "executable":  "/root/miniconda3/envs/gssl/bin/python3",
+  "writerId":  "24gintl9bzn3nitavx01ikseyb5z3wsi"
+}

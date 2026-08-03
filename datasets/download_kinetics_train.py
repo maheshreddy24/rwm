@@ -96,7 +96,7 @@ def main():
     parser.add_argument(
         "--num-classes",
         type=int,
-        default=40,
+        default=590,
         help="Number of random classes to download.",
     )
     parser.add_argument(

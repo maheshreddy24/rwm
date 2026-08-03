@@ -33,9 +33,9 @@ class RVMDataset(Dataset):
     every source and target frame, so the crop doesn't jitter between frames.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, split):
         self.config = config
-        self.video_csv = config["video_csv"]
+        self.video_csv = config[f"{split}_csv"]
         self.num_source_frames = config["num_source_frames"]
         self.num_target_frames = config["num_target_frames"]
         self.max_delta = config.get("max_delta", 48)
@@ -51,8 +51,9 @@ class RVMDataset(Dataset):
             # print(reader[0])
             for i, row in enumerate(reader):
                 # ic(row)
-                if i > 0 and float(row[-2]) > min_duration_sec: # path, frames, fps, duration, source
-                    data_paths.append(row)
+                # if i > 0 and float(row[-2]) > min_duration_sec: # path, frames, fps, duration, source
+                #     data_paths.append(row)
+                data_paths.append(row) # path, source
 
         self.data_paths = data_paths
         print(f"total samples: {len(self.data_paths)}")
@@ -177,11 +178,12 @@ class RVMDataset(Dataset):
 
 
 if __name__ == "__main__":
-    config_path = os.path.join(os.path.dirname(__file__), "..", "..", "configs", "dataset.yaml")
+    # config_path = os.path.join(os.path.dirname(__file__), "..", "..", "configs", "dataset.yaml")
+    config_path = '/home/rvm/configs/dataset.yaml'
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
-    dataset = RVMDataset(config)
+    dataset = RVMDataset(config, 'val')
     loader = torch.utils.data.DataLoader(
         dataset, batch_size=2, shuffle=True, collate_fn=RVMDataset.collate_fn
     )
@@ -190,3 +192,4 @@ if __name__ == "__main__":
     ic(batch["source"].shape)
     ic(batch["target"].shape)
     ic(batch["target_deltas"].shape)
+    ic(batch['target_deltas'][0, :])

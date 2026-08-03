@@ -18,8 +18,8 @@ warmup_ratio: 0.05
 min_lr: 1.0e-7
 
 num_epochs: 2
-batch_size: 16
-num_workers: 8
+batch_size: 32
+num_workers: 16
 amp: true
 
 log_interval: 200

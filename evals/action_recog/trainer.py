@@ -155,6 +155,7 @@ class Trainer:
         train_loader: DataLoader,
         eval_loader: Optional[DataLoader] = None,
         config: TrainConfig = None,
+        resume: str = None
     ):
         self.config = config
         self.device = torch.device(config.device)
@@ -196,8 +197,11 @@ class Trainer:
         self.scheduler = None
         self.scaler = torch.amp.GradScaler(enabled=self.config.amp and self.device_type == "cuda")
         self.current_epoch = 0
-
         self.init_optim()
+
+        if resume is not None:
+            self.load_checkpoint(resume)
+            self.epochs += 2
 
     def _extract_representation(self, frames_np: np.ndarray) -> torch.Tensor:
         """frames_np: (B, T, H, W, C) clip -> (B, T, N, 384) frozen backbone features."""
@@ -401,6 +405,12 @@ def main():
         "--config",
         default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "training_config.yaml"),
     )
+    parser.add_argument(
+        "--resume_path",
+        type = str,
+        default = None,
+        required = False
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -410,7 +420,7 @@ def main():
     torch.manual_seed(config.seed)
 
     train_loader, eval_loader = build_dataloaders(config)
-    trainer = Trainer(train_loader, eval_loader, config)
+    trainer = Trainer(train_loader, eval_loader, config, args.resume_path)
     trainer.train()
 
 

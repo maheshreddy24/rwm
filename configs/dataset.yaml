@@ -1,5 +1,7 @@
 num_source_frames: 4
-num_target_frames: 2
+num_target_frames: 4
 max_delta: 48
 frame_size: [256, 256]
 min_duration_sec: 4
+train_csv: /home/rvm/datasets/train_dataset_ssv2_kine.csv 
+val_csv: /home/rvm/datasets/test_dataset_ssv2_kine.csv
