@@ -1,7 +1,4 @@
-"""EMA / data2vec-style representation trainer (JAX + Flax).
-
-Fixes over the previous revision are marked with `# FIX:` comments.
-"""
+"""EMA / data2vec-style representation trainer (JAX + Flax)."""
 
 from __future__ import annotations
 
@@ -29,6 +26,9 @@ from src_jax.models.rvm_jax import RVMConfig, build_model
 from src_jax.optimisation.collapse_utills import collapse_test, flatten_collapse_metrics
 from src_jax.optimisation.config import EMATrainerConfig
 
+# checkpoints are named model_{epoch}_{step}.npz; this is the only place that knows it
+CKPT_RE = re.compile(r"model_(\d+)_(\d+)\.npz")
+
 
 class TrainState(train_state.TrainState):
     """Adds an EMA copy of the params, updated outside the optimizer/gradient path."""
@@ -36,20 +36,19 @@ class TrainState(train_state.TrainState):
     ema_params: Any
 
 
-# --------------------------------------------------------------------------------------
-# config access
-# --------------------------------------------------------------------------------------
-
 _MISSING = object()
+
+
+# --------------------------------------------------------------------------------------
+# small utilities
+# --------------------------------------------------------------------------------------
 
 
 def cfg_get(cfg: Any, key: str, default: Any = _MISSING) -> Any:
     """Read `key` from a dataclass, a Mapping, or a plain namespace.
 
-    FIX: the previous revision mixed `model_config['epochs']` with
-    `model_config.patch_size`, so exactly one of the two was guaranteed to fail
-    depending on what `RVMConfig` actually is. Going through one accessor makes the
-    trainer agnostic to that choice.
+    Only needed for `model_config`, whose concrete type varies; `EMATrainerConfig`
+    fields are read directly.
     """
     if isinstance(cfg, Mapping):
         if key in cfg:
@@ -69,7 +68,7 @@ def cfg_asdict(cfg: Any) -> dict:
     return {k: v for k, v in vars(cfg).items() if not k.startswith("_")}
 
 
-def _to_numpy_batch(batch):
+def to_numpy_batch(batch):
     """Batch (from `RVMDataset.collate_fn`, NHWC numpy) -> ready for `model.apply`."""
     return {
         "source": batch["source"],
@@ -78,18 +77,18 @@ def _to_numpy_batch(batch):
     }
 
 
-# --------------------------------------------------------------------------------------
-# checkpoint (de)serialisation
-# --------------------------------------------------------------------------------------
+def due(step: int, interval) -> bool:
+    """Interval check that treats 0/None as 'never' instead of dividing by zero."""
+    interval = int(interval or 0)
+    return interval > 0 and step % interval == 0
 
 
 def resolve_dtype(name: str) -> np.dtype:
     """`str(dtype)` -> `np.dtype`, including ml_dtypes extension types.
 
-    FIX: `np.dtype("bfloat16")` raises `TypeError` — numpy's string lookup does not
-    see ml_dtypes' registered extension types. Since bf16 is the whole reason
-    `save_pytree_npz` records per-leaf dtypes, the reload path was broken for exactly
-    the case it existed to serve.
+    `np.dtype("bfloat16")` raises TypeError: numpy's string lookup does not see
+    ml_dtypes' registered extension types, and bf16 is the whole reason
+    `save_pytree_npz` records per-leaf dtypes at all.
     """
     try:
         return np.dtype(name)
@@ -100,26 +99,61 @@ def resolve_dtype(name: str) -> np.dtype:
         return np.dtype(ext)
 
 
-def load_pretrained_params(path: str) -> dict:
-    """Load a Flax params pytree saved as a flat "/"-joined-key .npz."""
-    flat = np.load(path, allow_pickle=False)
-    tree: dict = {}
-    for key in flat.files:
-        parts = key.split("/")
-        node = tree
-        for part in parts[:-1]:
-            node = node.setdefault(part, {})
-        node[parts[-1]] = jnp.asarray(flat[key])
-    return tree
+# --------------------------------------------------------------------------------------
+# checkpoint (de)serialisation
+# --------------------------------------------------------------------------------------
+
+
+def save_pytree_npz(path: str, tree: Any) -> None:
+    """Save a pytree to one .npz: leaves as arrays, structure as a pickled treedef.
+
+    Dtype names are stored per-leaf and restored via `.view` on load, because npz
+    round-trips ml_dtypes extension types (e.g. bfloat16) as opaque `void` bytes.
+
+    Single-device only: every leaf must be `np.asarray`-convertible on this host.
+    """
+    leaves, treedef = jax.tree_util.tree_flatten(tree)
+    # `.view` on load requires a C-contiguous buffer
+    arrays = [np.ascontiguousarray(np.asarray(x)) for x in leaves]
+    payload = {f"leaf_{i}": arr for i, arr in enumerate(arrays)}
+    payload["treedef"] = np.array([pickle.dumps(treedef)], dtype=object)
+    payload["dtypes"] = np.array([str(arr.dtype) for arr in arrays], dtype=object)
+    # write-then-rename: an interrupted save must not leave a half-written .npz that
+    # `resume()` will later try to load
+    tmp = f"{path}.tmp.npz"
+    np.savez(tmp, **payload)
+    os.replace(tmp, path)
+
+
+def load_pytree_npz(path: str) -> Any:
+    """Inverse of `save_pytree_npz`."""
+    data = np.load(path, allow_pickle=True)
+    treedef = pickle.loads(data["treedef"][0])
+    leaves = []
+    for i, dtype_str in enumerate(data["dtypes"]):
+        arr = data[f"leaf_{i}"]
+        target = resolve_dtype(str(dtype_str))
+        if arr.dtype != target:
+            if arr.dtype.itemsize != target.itemsize:
+                raise ValueError(
+                    f"leaf_{i}: cannot view {arr.dtype} ({arr.dtype.itemsize}B) "
+                    f"as {target} ({target.itemsize}B)"
+                )
+            arr = arr.view(target)
+        leaves.append(jnp.asarray(arr))
+    return jax.tree_util.tree_unflatten(treedef, leaves)
+
+
+def leaf_paths(p, prefix=()):
+    for k, v in flax.core.unfreeze(p).items():
+        if isinstance(v, Mapping):
+            yield from leaf_paths(v, prefix + (k,))
+        else:
+            yield prefix + (k,)
 
 
 def merge_params(init_p, ckpt_p, _prefix=()):
-    """Checkpoint values win; freshly-initialized values fill the gaps.
-
-    The pretrained checkpoint predates `decoder_proj`, so those leaves keep their
-    random init. Any other fresh leaf means `build_model` has drifted from the
-    checkpoint's architecture, which the caller surfaces rather than swallows.
-    """
+    """Checkpoint values win; freshly-initialized values fill the gaps."""
     out = {}
     for k, v in flax.core.unfreeze(init_p).items():
         path = _prefix + (k,)
@@ -137,59 +171,39 @@ def merge_params(init_p, ckpt_p, _prefix=()):
     return out
 
 
-def _leaf_paths(p, prefix=()):
-    for k, v in flax.core.unfreeze(p).items():
-        if isinstance(v, Mapping):
-            yield from _leaf_paths(v, prefix + (k,))
-        else:
-            yield prefix + (k,)
+def load_and_merge_params(init_params, path: str, fresh_ok=("decoder_proj",)):
+    """Load a flat "/"-joined-key .npz of pretrained params and merge into `init_params`.
 
-
-def save_pytree_npz(path: str, tree: Any) -> None:
-    """Save an arbitrary pytree (nested dicts/namedtuples of arrays/scalars) to a
-    single .npz file: leaves as arrays, structure as a pickled treedef alongside them.
-
-    Dtype names are stored per-leaf and restored via `.view` on load: npz round-trips
-    ml_dtypes extension types (e.g. bfloat16, used for `ema_dtype`) as opaque `void`
-    bytes rather than preserving the dtype, so a plain `jnp.asarray` on load would
-    silently corrupt them.
-
-    Single-device only: every leaf must already live on this host as something
-    `np.asarray` can convert directly (no cross-device gather/reshard).
+    The pretrained checkpoint predates `decoder_proj`, so those leaves keep their random
+    init. Any *other* mismatch in either direction means `build_model` has drifted from
+    the checkpoint architecture, and is raised rather than silently absorbed.
     """
-    leaves, treedef = jax.tree_util.tree_flatten(tree)
-    # FIX: `.view` on load requires a C-contiguous buffer; `np.ascontiguousarray`
-    # makes that explicit rather than relying on how the leaf happened to be laid out.
-    arrays = [np.ascontiguousarray(np.asarray(x)) for x in leaves]
-    payload = {f"leaf_{i}": arr for i, arr in enumerate(arrays)}
-    payload["treedef"] = np.array([pickle.dumps(treedef)], dtype=object)
-    payload["dtypes"] = np.array([str(arr.dtype) for arr in arrays], dtype=object)
-    # FIX: write-then-rename, so an interrupted save can't leave a half-written .npz
-    # that `_checkpoint_steps` will later happily try to resume from. `np.savez`
-    # appends '.npz' unless the name already ends in it, hence the explicit suffix.
-    tmp = f"{path}.tmp.npz"
-    np.savez(tmp, **payload)
-    os.replace(tmp, path)
+    flat = np.load(path, allow_pickle=False)
+    pretrained: dict = {}
+    for key in flat.files:
+        parts = key.split("/")
+        node = pretrained
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = jnp.asarray(flat[key])
 
+    merged = merge_params(init_params, pretrained)
+    ckpt_keys, model_keys = set(leaf_paths(pretrained)), set(leaf_paths(merged))
 
-def load_pytree_npz(path: str) -> Any:
-    """Inverse of `save_pytree_npz`."""
-    data = np.load(path, allow_pickle=True)
-    treedef = pickle.loads(data["treedef"][0])
-    dtypes = data["dtypes"]
-    leaves = []
-    for i, dtype_str in enumerate(dtypes):
-        arr = data[f"leaf_{i}"]
-        target = resolve_dtype(str(dtype_str))
-        if arr.dtype != target:
-            if arr.dtype.itemsize != target.itemsize:
-                raise ValueError(
-                    f"leaf_{i}: cannot view {arr.dtype} ({arr.dtype.itemsize}B) "
-                    f"as {target} ({target.itemsize}B)"
-                )
-            arr = arr.view(target)
-        leaves.append(jnp.asarray(arr))
-    return jax.tree_util.tree_unflatten(treedef, leaves)
+    orphaned = ckpt_keys - model_keys
+    if orphaned:
+        raise ValueError(
+            f"checkpoint leaves unused by the model, so build_model has drifted from "
+            f"the checkpoint architecture: {sorted(orphaned)}"
+        )
+
+    fresh = model_keys - ckpt_keys
+    unexpected = {p for p in fresh if p[0] not in fresh_ok}
+    if unexpected:
+        raise ValueError(f"unexpected randomly-initialized leaves: {sorted(unexpected)}")
+
+    print(f"initialized from {path}; fresh: {sorted('/'.join(p) for p in fresh)}")
+    return merged
 
 
 # --------------------------------------------------------------------------------------
@@ -203,15 +217,30 @@ def num_optimizer_steps(config: EMATrainerConfig) -> int:
     return max(int(config.total_steps) // int(config.grad_accum), 1)
 
 
-def build_schedule(config: EMATrainerConfig) -> optax.Schedule:
-    """Linear warmup, then cosine decay to `lr_min`, indexed by optimizer step."""
+def build_wd_mask(params, skip_patterns):
+    """True (apply weight decay) for every leaf whose path doesn't contain any of
+    `skip_patterns` (case-insensitive substring), e.g. 'bias', 'norm', 'cls_token'."""
+    patterns = [p.lower() for p in skip_patterns]
+    flat = flax.traverse_util.flatten_dict(flax.core.unfreeze(params))
+    mask_flat = {
+        path: not any(p in "/".join(path).lower() for p in patterns) for path in flat
+    }
+    # optax's mask must have identical pytree structure, not just equal content
+    mask = flax.traverse_util.unflatten_dict(mask_flat)
+    return flax.core.freeze(mask) if isinstance(params, flax.core.FrozenDict) else mask
+
+
+def build_optimizer(config: EMATrainerConfig, params):
+    """AdamW + optional clipping, wrapped in MultiSteps, plus the LR schedule.
+
+    Warmup is derived from `total_opt_steps` so it lives on the same axis as
+    `decay_steps`; computing it in batch units and dividing by `grad_accum` can round
+    to 0 and silently drop warmup entirely.
+    """
     total_opt_steps = num_optimizer_steps(config)
-    # FIX: warmup is now derived from `total_opt_steps` so it lives on the same axis as
-    # `decay_steps`; the old `round(total_steps * ratio) // grad_accum` could round to 0
-    # for small ratios and silently drop warmup entirely.
     warmup_opt_steps = int(round(total_opt_steps * float(config.warmup_ratio)))
     warmup_opt_steps = max(0, min(warmup_opt_steps, total_opt_steps))
-    return optax.warmup_cosine_decay_schedule(
+    schedule = optax.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=float(config.lr_peak),
         warmup_steps=warmup_opt_steps,
@@ -219,25 +248,6 @@ def build_schedule(config: EMATrainerConfig) -> optax.Schedule:
         end_value=float(config.lr_min),
     )
 
-
-def build_wd_mask(params, skip_patterns):
-    """True (apply weight decay) for every leaf whose path doesn't contain any of
-    `skip_patterns` (case-insensitive substring match), e.g. 'bias', 'norm',
-    'cls_token', 'pos_embed' stay undecayed."""
-    patterns = [p.lower() for p in skip_patterns]
-    flat = flax.traverse_util.flatten_dict(flax.core.unfreeze(params))
-    mask_flat = {
-        path: not any(p in "/".join(path).lower() for p in patterns) for path in flat
-    }
-    # Match `params`' own container type (plain dict on current flax versions;
-    # optax's mask must have identical pytree structure, not just equal content).
-    mask = flax.traverse_util.unflatten_dict(mask_flat)
-    return flax.core.freeze(mask) if isinstance(params, flax.core.FrozenDict) else mask
-
-
-def build_optimizer(config: EMATrainerConfig, params):
-    schedule = build_schedule(config)
-    mask = build_wd_mask(params, config.wd_skip)
     chain = []
     if config.grad_clip is not None:
         chain.append(optax.clip_by_global_norm(float(config.grad_clip)))
@@ -248,20 +258,18 @@ def build_optimizer(config: EMATrainerConfig, params):
             b2=float(config.betas[1]),
             eps=float(config.eps),
             weight_decay=float(config.weight_decay),
-            mask=mask,
+            mask=build_wd_mask(params, config.wd_skip),
         )
     )
-    inner = optax.chain(*chain)
-    tx = optax.MultiSteps(inner, every_k_schedule=int(config.grad_accum))
+    tx = optax.MultiSteps(optax.chain(*chain), every_k_schedule=int(config.grad_accum))
     return tx, schedule
 
 
 def build_ema_momentum_fn(config: EMATrainerConfig):
-    """Returns `optimizer_step -> momentum`. `optimizer_step` is `MultiStepsState.gradient_step`
-    (increments once per real optimizer update, not per accumulation micro-step)."""
+    """Returns `optimizer_step -> momentum`, where `optimizer_step` is
+    `MultiStepsState.gradient_step` (one per real update, not per micro-step)."""
     total_opt_steps = num_optimizer_steps(config)
-    start_m = float(config.ema_momentum)
-    end_m = float(config.ema_momentum_end)
+    start_m, end_m = float(config.ema_momentum), float(config.ema_momentum_end)
     ramp = config.ema_ramp
 
     def momentum_fn(step):
@@ -274,14 +282,13 @@ def build_ema_momentum_fn(config: EMATrainerConfig):
 
 
 def ema_update(ema_params, params, momentum, dtype=jnp.float32):
-    """`ema = momentum * ema + (1 - momentum) * params`, accumulated in float32 and
-    stored in `dtype`.
+    """`ema = momentum * ema + (1 - momentum) * params`, mixed in fp32, stored in `dtype`.
 
-    FIX: the arithmetic was previously done in `dtype`. With bf16 storage and
-    momentum >= 0.999 the increment `(1 - m) * (p - e)` sits below one ulp of `e`
-    (bf16 eps ~= 7.8e-3), so it rounds away and the target encoder silently freezes.
-    Doing the mix in fp32 removes the intermediate rounding; see the check in
-    `Trainer._check_ema_precision` for the residual storage-precision risk.
+    The mix must not happen in `dtype`: with bf16 storage and momentum >= 0.999 the
+    increment `(1 - m) * (p - e)` sits below one ulp of `e` (bf16 eps ~= 7.8e-3), rounds
+    away, and the target encoder silently freezes. fp32 arithmetic removes the
+    intermediate rounding; the residual storage-precision risk is warned about in
+    `Trainer.__init__`.
     """
     m = jnp.asarray(momentum, dtype=jnp.float32)
     return jax.tree_util.tree_map(
@@ -310,9 +317,8 @@ def representation_loss(out, target_repr, masked_only=True, eps=1e-6):
     optional: without it the constant solution is trivially reachable and the loss curve
     will look healthy while the encoder collapses.
 
-    Returns:
-      (loss, target_std) where target_std is the mean per-dimension std of the
-      pre-normalization targets, i.e. the collapse monitor.
+    Returns (loss, target_std), where target_std is the mean per-dimension std of the
+    pre-normalization targets, i.e. the collapse monitor.
     """
     pred = out["representation"].astype(jnp.float32)  # B, T, N, E
     tgt = target_repr.astype(jnp.float32)  # B, T, N, E
@@ -324,9 +330,8 @@ def representation_loss(out, target_repr, masked_only=True, eps=1e-6):
     mask = out["masked_indices"] if masked_only else jnp.ones_like(out["masked_indices"])
     mask = mask.astype(jnp.float32)
     per_token = jnp.mean((pred - tgt_n) ** 2, axis=-1, keepdims=True)
-    # FIX: `jnp.maximum` instead of `jnp.clip(..., min=...)` — the `min=` keyword is
-    # only available on newer jax, and this is the one place a version bump would turn
-    # into a confusing TypeError deep inside a jit trace.
+    # jnp.maximum, not jnp.clip(..., min=...): the `min=` keyword only exists on newer
+    # jax and this is the worst place for a version bump to surface as a TypeError
     loss = jnp.sum(per_token * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
     tgt_std = jnp.mean(jnp.std(tgt.reshape(-1, tgt.shape[-1]), axis=0))
@@ -338,24 +343,30 @@ def representation_loss(out, target_repr, masked_only=True, eps=1e-6):
 # --------------------------------------------------------------------------------------
 
 
+def reconstruct(model, params, batch, rng):
+    """The one masked-reconstruction forward pass, shared by train/eval/collapse."""
+    mask_rng, state_rng = jax.random.split(rng)
+    return model.apply(
+        {"params": params},
+        batch["source"],
+        batch["target"],
+        batch["target_deltas"],
+        rng_key=mask_rng,
+        rngs={"default": state_rng},
+        method=model.reconstruct,
+    )
+
+
 def make_train_step(model, config: EMATrainerConfig, schedule: optax.Schedule):
     momentum_fn = build_ema_momentum_fn(config)
     ema_dtype = getattr(jnp, config.ema_dtype)
     masked_only = bool(config.loss_on_masked_only)
 
     def train_step(state, batch, rng):
-        mask_rng, state_rng, next_rng = jax.random.split(rng, 3)
+        step_rng, next_rng = jax.random.split(rng)
 
         def loss_fn(params):
-            out = model.apply(
-                {"params": params},
-                batch["source"],
-                batch["target"],
-                batch["target_deltas"],
-                rng_key=mask_rng,
-                rngs={"default": state_rng},
-                method=model.reconstruct,
-            )
+            out = reconstruct(model, params, batch, step_rng)
             target_repr = jax.lax.stop_gradient(
                 model.apply(
                     {"params": state.ema_params},
@@ -363,35 +374,29 @@ def make_train_step(model, config: EMATrainerConfig, schedule: optax.Schedule):
                     method=model.encode_target,
                 )
             )
-            loss, tgt_std = representation_loss(out, target_repr, masked_only=masked_only)
-            return loss, tgt_std
+            return representation_loss(out, target_repr, masked_only=masked_only)
 
         (loss, tgt_std), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
 
-        # FIX: capture the pre-update counters. `apply_gradients` advances
-        # `gradient_step`, so reading it afterwards reports the LR/momentum of the
-        # *next* update rather than the one that was just applied.
-        prev_opt_state = state.opt_state
-        applied_step = prev_opt_state.gradient_step
-
+        # capture the pre-update counter: apply_gradients advances `gradient_step`, so
+        # reading it afterwards reports the LR/momentum of the *next* update
+        applied_step = state.opt_state.gradient_step
         state = state.apply_gradients(grads=grads)
 
-        # `mini_step == 0` means this call just completed a real optimizer update
-        # (as opposed to an intermediate grad_accum accumulation step); gate the
-        # EMA update on it, and ramp momentum over `gradient_step` (the real-update
-        # counter), not the per-batch `state.step`.
+        # mini_step == 0 means this call just completed a real optimizer update rather
+        # than an intermediate grad_accum micro-step
         did_update = state.opt_state.mini_step == 0
         momentum = momentum_fn(applied_step)
 
-        # FIX: `lax.cond` instead of folding momentum=1.0 through a full tree_map —
-        # on accumulation micro-steps the old code still read, scaled and rewrote
-        # every EMA leaf just to reproduce its own input.
-        new_ema = jax.lax.cond(
-            did_update,
-            lambda: ema_update(state.ema_params, state.params, momentum, ema_dtype),
-            lambda: state.ema_params,
+        # lax.cond, not momentum=1.0 through a tree_map: on micro-steps that would read,
+        # scale and rewrite every EMA leaf just to reproduce its own input
+        state = state.replace(
+            ema_params=jax.lax.cond(
+                did_update,
+                lambda: ema_update(state.ema_params, state.params, momentum, ema_dtype),
+                lambda: state.ema_params,
+            )
         )
-        state = state.replace(ema_params=new_ema)
 
         metrics = {
             "loss": loss,
@@ -401,8 +406,6 @@ def make_train_step(model, config: EMATrainerConfig, schedule: optax.Schedule):
             "lr": schedule(applied_step),
             "did_update": did_update.astype(jnp.float32),
         }
-        # FIX: guarded — `grads["decoder_proj"]` was an unconditional KeyError for any
-        # model built without that head.
         if "decoder_proj" in grads:
             metrics["proj_grad_norm"] = optax.global_norm(grads["decoder_proj"])
         return state, metrics, next_rng
@@ -412,16 +415,7 @@ def make_train_step(model, config: EMATrainerConfig, schedule: optax.Schedule):
 
 def make_eval_step(model, masked_only: bool = True):
     def eval_step(params, ema_params, batch, rng):
-        mask_rng, state_rng = jax.random.split(rng)
-        out = model.apply(
-            {"params": params},
-            batch["source"],
-            batch["target"],
-            batch["target_deltas"],
-            rng_key=mask_rng,
-            rngs={"default": state_rng},
-            method=model.reconstruct,
-        )
+        out = reconstruct(model, params, batch, rng)
         target_repr = model.apply(
             {"params": ema_params}, batch["target"], method=model.encode_target
         )
@@ -434,22 +428,12 @@ def make_eval_step(model, masked_only: bool = True):
 def make_collapse_step(model):
     """Dimensional-collapse diagnostics on the student's predicted representation.
 
-    Kept separate from `train_step` (rather than folded into `representation_loss`)
-    because the SVD in `collapse_test` is only worth paying for every
-    `config.collapse_interval` steps, not every step.
+    Separate from `train_step` because the SVD in `collapse_test` is only worth paying
+    for every `config.collapse_interval` steps, not every step.
     """
 
     def collapse_step(params, batch, rng):
-        mask_rng, state_rng = jax.random.split(rng)
-        out = model.apply(
-            {"params": params},
-            batch["source"],
-            batch["target"],
-            batch["target_deltas"],
-            rng_key=mask_rng,
-            rngs={"default": state_rng},
-            method=model.reconstruct,
-        )
+        out = reconstruct(model, params, batch, rng)
         return collapse_test(out["representation"].astype(jnp.float32))
 
     return jax.jit(collapse_step)
@@ -470,15 +454,13 @@ class Trainer:
     ):
         self.model_config = model_config
         self.config = config or EMATrainerConfig()
-        # FIX: was `cfg_get(model_config, "epochs")` -- epochs is a trainer/schedule
-        # concept and lives on `config` (EMATrainerConfig), not the model config.
-        self.epochs = int(cfg_get(self.config, "epochs"))
-        self.current_epoch = 0
-        # FIX: `global_step` was only ever assigned inside `resume()`, so a fresh run
-        # raised AttributeError the first time it checkpointed or evaluated.
-        self.global_step = 0
         self.train_loader = train_loader
         self.eval_loader = eval_loader
+
+        # epochs is a trainer/schedule concept and lives on EMATrainerConfig
+        self.epochs = int(self.config.epochs)
+        self.current_epoch = 0
+        self.global_step = 0
 
         self.model = build_model(model_config)
         self.patch_size = tuple(cfg_get(model_config, "patch_size")[-2:])
@@ -488,83 +470,61 @@ class Trainer:
         )
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         self.max_checkpoints_to_keep = 3
-
         self.rng = jax.random.PRNGKey(self.config.seed or 0)
 
-        self._reconcile_total_steps()
-        self._init_state()
-
-    # -- setup -------------------------------------------------------------------------
-
-    def _reconcile_total_steps(self):
-        """Keep `config.total_steps` (which drives the LR and EMA schedules) in sync
-        with the number of batches the loop will actually run.
-
-        FIX: previously the loop ran `epochs * len(train_loader)` batches while the
-        schedules were built from an independently-configured `total_steps`. Any
-        mismatch meant the cosine decay and momentum ramp finished early or never
-        finished at all, with nothing to indicate it.
-        """
+        # -- keep total_steps (which drives the LR and EMA schedules) equal to the
+        # number of batches the loop will actually run, or the cosine decay and
+        # momentum ramp finish early / never finish, with nothing to indicate it.
         try:
-            per_epoch = len(self.train_loader)
+            self.steps_per_epoch = len(train_loader)
         except TypeError:
-            per_epoch = None
-
-        configured = int(cfg_get(self.config, "total_steps", 0) or 0)
-
-        if per_epoch is None:
+            self.steps_per_epoch = None
+        configured = int(self.config.total_steps or 0)
+        if self.steps_per_epoch is None:
             if configured <= 0:
                 raise ValueError(
                     "train_loader has no __len__, so total_steps must be set explicitly"
                 )
-            self.steps_per_epoch = None
-            return
+        else:
+            derived = self.steps_per_epoch * self.epochs
+            if configured > 0 and configured != derived:
+                warnings.warn(
+                    f"config.total_steps={configured} but the loop will run "
+                    f"{self.epochs} epochs x {self.steps_per_epoch} batches = {derived}; "
+                    f"using {derived} so the schedules span the real run.",
+                    stacklevel=2,
+                )
+            if configured != derived:
+                if dataclasses.is_dataclass(self.config):
+                    self.config = dataclasses.replace(self.config, total_steps=derived)
+                else:
+                    self.config.total_steps = derived
 
-        self.steps_per_epoch = per_epoch
-        derived = per_epoch * self.epochs
-        if configured > 0 and configured != derived:
-            warnings.warn(
-                f"config.total_steps={configured} but the loop will run "
-                f"{self.epochs} epochs x {per_epoch} batches = {derived}; "
-                f"using {derived} so the schedules span the real run.",
-                stacklevel=2,
+        # -- warn when ema_dtype cannot represent the EMA increment. The update is
+        # e <- e + (1 - m)(p - e); if (1 - m) is below the storage dtype's eps the
+        # result rounds back to e and the target encoder stops moving while every
+        # logged metric still looks fine.
+        if self.config.ema_dtype != "float32":
+            try:
+                eps = float(np.finfo(resolve_dtype(self.config.ema_dtype)).eps)
+            except Exception:
+                eps = None
+            slowest = 1.0 - max(
+                float(self.config.ema_momentum), float(self.config.ema_momentum_end)
             )
-        if configured != derived:
-            self.config = self._with_total_steps(derived)
+            if eps is not None and slowest < eps:
+                warnings.warn(
+                    f"ema_dtype={self.config.ema_dtype} (eps={eps:.2e}) cannot resolve "
+                    f"an EMA increment of {slowest:.2e}; the target encoder may stop "
+                    f"updating. Use ema_dtype='float32' unless memory forces otherwise.",
+                    stacklevel=2,
+                )
 
-    def _with_total_steps(self, total_steps: int):
-        if dataclasses.is_dataclass(self.config):
-            return dataclasses.replace(self.config, total_steps=total_steps)
-        self.config.total_steps = total_steps
-        return self.config
-
-    def _check_ema_precision(self):
-        """Warn when `ema_dtype` cannot represent the EMA increment.
-
-        The update is `e <- e + (1 - m)(p - e)`. If `(1 - m)` is below the storage
-        dtype's eps, the result rounds back to `e` and the target encoder stops moving
-        while every logged metric still looks fine.
-        """
-        if self.config.ema_dtype == "float32":
-            return
-        try:
-            eps = float(np.finfo(resolve_dtype(self.config.ema_dtype)).eps)
-        except Exception:
-            return
-        slowest = 1.0 - max(
-            float(self.config.ema_momentum), float(self.config.ema_momentum_end)
-        )
-        if slowest < eps:
-            warnings.warn(
-                f"ema_dtype={self.config.ema_dtype} (eps={eps:.2e}) cannot resolve an "
-                f"EMA increment of {slowest:.2e}; the target encoder may stop updating. "
-                f"Use ema_dtype='float32' unless memory forces otherwise.",
-                stacklevel=2,
-            )
+        self._init_state()
 
     def _init_state(self):
         self.rng, init_rng, state_rng = jax.random.split(self.rng, 3)
-        first_batch = _to_numpy_batch(next(iter(self.train_loader)))
+        first_batch = to_numpy_batch(next(iter(self.train_loader)))
 
         params = self.model.init(
             {"params": init_rng, "default": state_rng},
@@ -576,139 +536,154 @@ class Trainer:
         )["params"]
 
         if self.config.init_params_path is not None:
-            params = self._load_and_merge(params)
+            params = load_and_merge_params(params, self.config.init_params_path)
 
         n_params = sum(x.size for x in jax.tree_util.tree_leaves(params))
         print(f"model params: {n_params / 1e6:.1f}M")
 
-        self._check_ema_precision()
-
-        # EMA target encoder starts as an exact copy of the (pretrained) params, cast
-        # to `ema_dtype` regardless of the student's compute dtype.
+        # EMA target encoder starts as an exact copy of the (pretrained) params, cast to
+        # ema_dtype regardless of the student's compute dtype
         ema_dtype = getattr(jnp, self.config.ema_dtype)
-        ema_params = jax.tree_util.tree_map(lambda x: jnp.asarray(x, dtype=ema_dtype), params)
+        ema_params = jax.tree_util.tree_map(
+            lambda x: jnp.asarray(x, dtype=ema_dtype), params
+        )
 
         tx, self.schedule = build_optimizer(self.config, params)
         self.state = TrainState.create(
             apply_fn=self.model.apply, params=params, tx=tx, ema_params=ema_params
         )
 
+        masked_only = bool(self.config.loss_on_masked_only)
         self.train_step_fn = make_train_step(self.model, self.config, self.schedule)
-        self.eval_step_fn = make_eval_step(
-            self.model, masked_only=bool(self.config.loss_on_masked_only)
-        )
+        self.eval_step_fn = make_eval_step(self.model, masked_only=masked_only)
         self.collapse_step_fn = make_collapse_step(self.model)
 
-        wandb_config = cfg_asdict(self.config) | {
-            **cfg_asdict(self.model_config),
-            "dtype": str(cfg_get(self.model_config, "dtype", None)),
-        }
         wandb.init(
-            project=self.config.wandb_project, name=self.config.wandb_name, config=wandb_config
+            project=self.config.wandb_project,
+            name=self.config.wandb_name,
+            config=cfg_asdict(self.config)
+            | {
+                **cfg_asdict(self.model_config),
+                "dtype": str(cfg_get(self.model_config, "dtype", None)),
+            },
         )
-        # FIX: all logging now shares one x-axis. The old code mixed auto-increment
-        # (train), `step=epoch` (collapse) and `step=global_step` (eval); wandb requires
-        # non-decreasing steps, so the collapse points were being dropped silently.
+        # one x-axis for everything: wandb requires non-decreasing steps, so mixing
+        # auto-increment / step=epoch / step=global_step drops points silently
         wandb.define_metric("train/*", step_metric="global_step")
         wandb.define_metric("eval/*", step_metric="global_step")
 
-    def _load_and_merge(self, init_params):
-        """Fill from the pretrained checkpoint; `decoder_proj` stays randomly initialized."""
-        pretrained = load_pretrained_params(self.config.init_params_path)
-        merged = merge_params(init_params, pretrained)
-
-        ckpt_keys = set(_leaf_paths(pretrained))
-        model_keys = set(_leaf_paths(merged))
-
-        orphaned = ckpt_keys - model_keys
-        if orphaned:
-            raise ValueError(
-                f"checkpoint leaves unused by the model, so build_model has drifted "
-                f"from the checkpoint architecture: {sorted(orphaned)}"
-            )
-
-        fresh = model_keys - ckpt_keys
-        expected_fresh = {p for p in fresh if p[0] == "decoder_proj"}
-        if fresh != expected_fresh:
-            raise ValueError(
-                f"unexpected randomly-initialized leaves: {sorted(fresh - expected_fresh)}"
-            )
-
-        print(
-            f"initialized from {self.config.init_params_path}; "
-            f"fresh: {sorted('/'.join(p) for p in fresh)}"
-        )
-        return merged
-
     # -- checkpointing -----------------------------------------------------------------
 
-    def _checkpoint_path(self, step: int) -> str:
-        return os.path.join(self.checkpoint_dir, f"ckpt_{step:08d}.npz")
-
-    def _checkpoint_steps(self) -> list[int]:
-        steps = []
+    def _checkpoints(self) -> list[tuple[int, int, str]]:
+        """(epoch, step, path) for every checkpoint in `checkpoint_dir`, oldest first."""
+        found = []
         for fname in os.listdir(self.checkpoint_dir):
-            m = re.fullmatch(r"ckpt_(\d+)\.npz", fname)
+            m = CKPT_RE.fullmatch(fname)
             if m:
-                steps.append(int(m.group(1)))
-        return sorted(steps)
+                found.append(
+                    (
+                        int(m.group(1)),
+                        int(m.group(2)),
+                        os.path.join(self.checkpoint_dir, fname),
+                    )
+                )
+        return sorted(found)
 
-    def save_checkpoint(self, epoch: int) -> str:
-        ckpt = {
-            "params": self.state.params,
-            "ema_params": self.state.ema_params,
-            "opt_state": self.state.opt_state,
-            "step": self.state.step,
-            # FIX: store the *completed* epoch and resume at epoch + 1; the old field
-            # was ambiguous and `train()` restarted from epoch 0 regardless.
-            "epoch": epoch,
-            "global_step": self.global_step,
-            # FIX: the sampling rng was not checkpointed, so a resumed run replayed
-            # the same mask/dropout draws from the very beginning.
-            "rng": self.rng,
-        }
-        path = self._checkpoint_path(self.global_step)
-        save_pytree_npz(path, ckpt)
-
-        for stale in self._checkpoint_steps()[: -self.max_checkpoints_to_keep]:
-            os.remove(self._checkpoint_path(stale))
+    def save_checkpoint(self, epoch_done: bool = False) -> str:
+        """Write model_{epoch}_{step}.npz and prune all but the newest N."""
+        path = os.path.join(
+            self.checkpoint_dir, f"model_{self.current_epoch}_{self.global_step}.npz"
+        )
+        save_pytree_npz(
+            path,
+            {
+                "params": self.state.params,
+                "ema_params": self.state.ema_params,
+                "opt_state": self.state.opt_state,
+                "epoch": np.int32(self.current_epoch),
+                "step": np.int32(self.global_step),
+                # 1 only for the end-of-epoch save, so resume knows whether to re-run
+                # this epoch or move to the next one
+                "epoch_done": np.int32(bool(epoch_done)),
+                "rng": self.rng,
+            },
+        )
+        if self.max_checkpoints_to_keep > 0:
+            for *_, stale in self._checkpoints()[: -self.max_checkpoints_to_keep]:
+                os.remove(stale)
         return path
 
     def resume(self) -> bool:
-        steps = self._checkpoint_steps()
-        if not steps:
+        ckpts = self._checkpoints()
+        if not ckpts:
             return False
-        latest = steps[-1]
-        restored = load_pytree_npz(self._checkpoint_path(latest))
+        epoch, step, path = ckpts[-1]
+        restored = load_pytree_npz(path)
         self.state = self.state.replace(
             params=restored["params"],
             ema_params=restored["ema_params"],
             opt_state=restored["opt_state"],
             step=restored["step"],
         )
-        self.current_epoch = int(restored["epoch"]) + 1
-        self.global_step = int(restored.get("global_step", latest))
+        self.global_step = int(step)
+        # mid-epoch checkpoints replay their epoch from the start (the loader can't be
+        # positioned mid-stream); end-of-epoch ones move on
+        self.current_epoch = int(epoch) + int(restored.get("epoch_done", 0))
         if "rng" in restored:
             self.rng = jnp.asarray(restored["rng"], dtype=jnp.uint32)
         print(
-            f"resumed from {self._checkpoint_path(latest)} "
+            f"resumed from {path} "
             f"(epoch {self.current_epoch}, step {self.global_step})"
         )
         return True
 
-    # -- loop --------------------------------------------------------------------------
+    # -- eval / logging ----------------------------------------------------------------
 
-    @staticmethod
-    def _due(step: int, interval) -> bool:
-        """Interval check that tolerates 0/None as 'never' instead of dividing by zero."""
-        interval = int(interval or 0)
-        return interval > 0 and step % interval == 0
+    def _log(self, payload: dict):
+        wandb.log(
+            payload | {"epoch": self.current_epoch, "global_step": self.global_step}
+        )
+
+    def eval(self) -> dict[str, float]:
+        totals: dict[str, float] = {}
+        n_batches = 0
+        # fixed key on purpose: eval masks should be identical across evaluations so the
+        # curve reflects the model, not the draw
+        rng = jax.random.PRNGKey(0)
+        for batch in self.eval_loader:
+            rng, step_rng = jax.random.split(rng)
+            metrics = self.eval_step_fn(
+                self.state.params,
+                self.state.ema_params,
+                to_numpy_batch(batch),
+                step_rng,
+            )
+            for k, v in metrics.items():
+                totals[k] = totals.get(k, 0.0) + float(v)
+            n_batches += 1
+        return {k: v / max(n_batches, 1) for k, v in totals.items()}
+
+    def _eval_and_save(self, epoch_done: bool = False) -> str:
+        """Every checkpoint is written at an eval boundary, so model_{epoch}_{step}
+        always lines up with a logged eval point."""
+        if self.eval_loader is not None:
+            metrics = self.eval()
+            print(
+                f"epoch {self.current_epoch} step {self.global_step} "
+                f"eval_loss {metrics['loss']:.4f} tgt_std {metrics['target_std']:.4f}"
+            )
+            self._log({f"eval/{k}": v for k, v in metrics.items()})
+        path = self.save_checkpoint(epoch_done=epoch_done)
+        print(f"saved {path}")
+        return path
+
+    # -- loop --------------------------------------------------------------------------
 
     def train(self, max_steps: Optional[int] = None, resume: bool = False):
         """Run the training loop.
 
         Args:
-          max_steps: optional early stop after this many batches. Note this does *not*
+          max_steps: optional early stop after this many batches. This does *not*
             rescale the LR/EMA schedules — it is a debug cap, not a shorter run.
           resume: pick up from the newest checkpoint in `checkpoint_dir` if one exists.
         """
@@ -717,7 +692,9 @@ class Trainer:
 
         stop = False
         for epoch in tqdm(
-            range(self.current_epoch, self.epochs), desc="training", initial=self.current_epoch,
+            range(self.current_epoch, self.epochs),
+            desc="training",
+            initial=self.current_epoch,
             total=self.epochs,
         ):
             self.current_epoch = epoch
@@ -728,83 +705,44 @@ class Trainer:
                 leave=False,
             )
             for batch in batches:
-                metrics = self._train_step(batch)
+                batch = to_numpy_batch(batch)
+                self.state, metrics, self.rng = self.train_step_fn(
+                    self.state, batch, self.rng
+                )
+                # single source of truth: MultiSteps increments state.step once per batch
+                self.global_step = int(self.state.step)
 
-                # FIX: intervals are keyed off the global step, not the in-epoch step,
-                # so they no longer all fire at step 0 of every epoch (which meant an
-                # eval pass before any training had happened).
-                if self._due(self.global_step, self.config.log_interval):
+                if due(self.global_step, self.config.log_interval):
+                    # only materialize here — float() on every step forces a device sync
+                    m = {k: float(v) for k, v in metrics.items()}
                     print(
                         f"epoch {epoch} step {self.global_step} "
-                        f"loss {metrics['loss']:.4f} tgt_std {metrics['target_std']:.4f} "
-                        f"lr {metrics['lr']:.2e} ema_m {metrics['ema_momentum']:.6f}"
+                        f"loss {m['loss']:.4f} tgt_std {m['target_std']:.4f} "
+                        f"lr {m['lr']:.2e} ema_m {m['ema_momentum']:.6f}"
                     )
-                    self._log({f"train/{k}": v for k, v in metrics.items()}, epoch)
+                    self._log({f"train/{k}": v for k, v in m.items()})
 
-                if self._due(self.global_step, self.config.collapse_interval):
-                    self._log_collapse_metrics(batch, epoch)
+                if due(self.global_step, self.config.collapse_interval):
+                    self.rng, step_rng = jax.random.split(self.rng)
+                    flat = flatten_collapse_metrics(
+                        self.collapse_step_fn(self.state.params, batch, step_rng)
+                    )
+                    self._log(
+                        {f"train/collapse/{k}": float(v) for k, v in flat.items()}
+                    )
 
-                if self.eval_loader is not None and self._due(
-                    self.global_step, self.config.eval_interval
-                ):
-                    self._evaluate_and_log(epoch)
+                if due(self.global_step, self.config.eval_interval):
+                    self._eval_and_save()
 
                 if max_steps is not None and self.global_step >= int(max_steps):
                     stop = True
                     break
 
             batches.close()
-            self.save_checkpoint(epoch)
-
-            if self.eval_loader is not None:
-                self._evaluate_and_log(epoch)
+            self._eval_and_save(epoch_done=True)
 
             if stop:
                 print(f"stopping early at step {self.global_step} (max_steps)")
                 break
 
         wandb.finish()
-
-    def _log(self, payload: dict, epoch: int):
-        wandb.log(payload | {"epoch": epoch, "global_step": self.global_step})
-
-    def _train_step(self, batch):
-        batch = _to_numpy_batch(batch)
-        self.state, metrics, self.rng = self.train_step_fn(self.state, batch, self.rng)
-        # FIX: `global_step` is now advanced from the single source of truth
-        # (`state.step`, which MultiSteps increments once per batch) rather than never
-        # being updated at all — checkpoints previously all wrote to ckpt_00000000.npz.
-        self.global_step = int(self.state.step)
-        return {k: float(v) for k, v in metrics.items()}
-
-    def _log_collapse_metrics(self, batch, epoch: int):
-        batch = _to_numpy_batch(batch)
-        self.rng, step_rng = jax.random.split(self.rng)
-        metrics = self.collapse_step_fn(self.state.params, batch, step_rng)
-        flat = flatten_collapse_metrics(metrics)
-        self._log({f"train/collapse/{k}": float(v) for k, v in flat.items()}, epoch)
-
-    def _evaluate_and_log(self, epoch: int):
-        metrics = self.eval()
-        print(
-            f"epoch {epoch} step {self.global_step} "
-            f"eval_loss {metrics['loss']:.4f} tgt_std {metrics['target_std']:.4f}"
-        )
-        self._log({f"eval/{k}": v for k, v in metrics.items()}, epoch)
-
-    def eval(self) -> dict[str, float]:
-        totals: dict[str, float] = {}
-        n_batches = 0
-        # Fixed key on purpose: eval masks should be identical across evaluations so the
-        # curve reflects the model, not the draw.
-        rng = jax.random.PRNGKey(0)
-        for batch in self.eval_loader:
-            batch = _to_numpy_batch(batch)
-            rng, step_rng = jax.random.split(rng)
-            metrics = self.eval_step_fn(
-                self.state.params, self.state.ema_params, batch, step_rng
-            )
-            for k, v in metrics.items():
-                totals[k] = totals.get(k, 0.0) + float(v)
-            n_batches += 1
-        return {k: v / max(n_batches, 1) for k, v in totals.items()}
