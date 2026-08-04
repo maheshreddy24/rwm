@@ -38,13 +38,9 @@ def build_dataloader(dataset_config, dataloader_config, shuffle: bool):
         num_workers=dataloader_config.get("num_workers", 4),
         pin_memory=False,  # pinned memory is a CUDA/torch-tensor concept, unused once we go to numpy/JAX
         drop_last=shuffle,
-        persistent_workers = True,
-        prefetch_factor = 4,
         collate_fn=RVMDataset.collate_fn,
     )
-# persistent_workers=True
-# prefetch_factor=4
-# pin_memory=True
+
 
 def main():
     parser = argparse.ArgumentParser()
