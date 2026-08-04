@@ -7,27 +7,31 @@ import sys
 import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
-from icecream import ic
 
-# torch (and anything importing torchvision) must load before jax:
-# libtriton.so and jaxlib each bundle their own LLVM, and whichever
-# dlopens second binds the wrong symbols and segfaults.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# torch and everything that dlopens LLVM must load before jax: libtriton.so and
+# jaxlib each bundle their own, and whichever loads second binds the wrong
+# symbols and segfaults. `import torch` alone is NOT enough -- torch._dynamo and
+# triton load lazily, and get dragged in later by torchvision (via
+# ssv2_inf_dataset / readout_head), i.e. after jax. So force them now.
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+import torchvision  # noqa: F401  -- pulls torch._dynamo -> triton
+import torch._dynamo  # noqa: F401  -- belt and braces
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import wandb
 import yaml
+from icecream import ic
 from tqdm import tqdm
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from models.readout_head import Readout
 from models.rvm_jax import build_model
 from ssv2_inf_dataset import SSv2
-
 
 #! params from the 4D scaling paper (Carreira et al.), optimization fixed across all tasks/models:
 #! 1.28M training examples, batch size 32 -> 40k steps, AdamW, wd 1e-4,
@@ -35,7 +39,31 @@ from ssv2_inf_dataset import SSv2
 #! here the same budget is expressed in epochs: num_epochs * len(train_loader)
 #! optimizer updates, with warmup_ratio of those spent on linear warmup.
 
+import logging
 
+def get_logger(log_path):
+    logger = logging.getLogger("training_logger")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    # Prevent duplicate handlers if called multiple times
+    if not logger.handlers:
+        formatter = logging.Formatter(
+            "%(asctime)s - %(levelname)s - %(message)s"
+        )
+
+        file_handler = logging.FileHandler(log_path, mode="a")
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(formatter)
+
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+
+    return logger
 def recover_tree(flat_dict):
     """Un-flatten a `{'a/b/c': array}` dict (as saved in the restored npz) into the
     nested dict pytree flax expects for `apply({'params': ...})`."""
@@ -167,8 +195,8 @@ class Trainer:
             self.config.checkpoint_dir, f"exp_{time.strftime('%Y%m%d_%H%M%S')}"
         )
         os.makedirs(self.checkpoint_dir, exist_ok=True)
+        self.logger = get_logger(os.path.join(self.checkpoint_dir, "training.log"))
 
-        # --- frozen RVM (jax): encoder/core/decoder weights never change ---
         self.rng_key = jax.random.PRNGKey(self.config.seed)
         self.rvm_encoder = build_model()
         restored = recover_tree(
@@ -181,7 +209,7 @@ class Trainer:
         self.epochs = self.config.num_epochs
 
         count = sum(np.prod(v.shape) for v in jax.tree_util.tree_leaves(self.restored_params))
-        print(f"number of params for RVM encoder = {count}")
+        self.logger.info(f"number of params for RVM encoder = {count}")
 
         # --- readout head (torch): the only thing being optimized ---
         self.model = Readout(
@@ -318,7 +346,7 @@ class Trainer:
                         },
                         step=global_step,
                     )
-                    print(
+                    self.logger.info(
                         f"[epoch {epoch} step {global_step}] "
                         f"loss {loss.item():.4f}"
                     )
@@ -342,7 +370,7 @@ class Trainer:
                 step=global_step,
             )
 
-            print(f"[epoch {epoch}] average train loss: {epoch_loss:.4f}")
+            self.logger.info(f"[epoch {epoch}] average train loss: {epoch_loss:.4f}")
 
             # Save checkpoint every epoch
             self.save_checkpoint(epoch=epoch, name=f"epoch_{epoch}.pt")
@@ -372,10 +400,10 @@ class Trainer:
         avg_loss = total_loss / max(1, total_samples)
         accuracy = total_correct / max(1, total_samples)
         wandb.log(
-            {"eval/loss": avg_loss, "eval/accuracy": accuracy, "epoch": self.current_epoch},
-            step=self.current_epoch,
+            {"eval/loss": avg_loss, "eval/accuracy": accuracy},
+            # step=self.current_epoch + 1,
         )
-        print(f"[epoch {self.current_epoch}] eval loss {avg_loss:.4f} acc {accuracy:.4f}")
+        self.logger.info(f"[epoch {self.current_epoch}] eval loss {avg_loss:.4f} acc {accuracy:.4f}")
         return avg_loss, accuracy
 
 

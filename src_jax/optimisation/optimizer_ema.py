@@ -10,6 +10,7 @@ import time
 import warnings
 from collections.abc import Mapping
 from typing import Any, Optional
+import logging
 
 import flax
 import flax.traverse_util
@@ -29,6 +30,30 @@ from src_jax.optimisation.config import EMATrainerConfig
 # checkpoints are named model_{epoch}_{step}.npz; this is the only place that knows it
 CKPT_RE = re.compile(r"model_(\d+)_(\d+)\.npz")
 
+
+def get_logger(log_path):
+    logger = logging.getLogger("training_logger")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    # Prevent duplicate handlers if called multiple times
+    if not logger.handlers:
+        formatter = logging.Formatter(
+            "%(asctime)s - %(levelname)s - %(message)s"
+        )
+
+        file_handler = logging.FileHandler(log_path, mode="a")
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(formatter)
+
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+
+    return logger
 
 class TrainState(train_state.TrainState):
     """Adds an EMA copy of the params, updated outside the optimizer/gradient path."""
@@ -521,6 +546,7 @@ class Trainer:
                 )
 
         self._init_state()
+        self.logger = get_logger(os.path.join(self.checkpoint_dir, "training.log"))
 
     def _init_state(self):
         self.rng, init_rng, state_rng = jax.random.split(self.rng, 3)
@@ -539,7 +565,7 @@ class Trainer:
             params = load_and_merge_params(params, self.config.init_params_path)
 
         n_params = sum(x.size for x in jax.tree_util.tree_leaves(params))
-        print(f"model params: {n_params / 1e6:.1f}M")
+        self.logger.info(f"model params: {n_params / 1e6:.1f}M")
 
         # EMA target encoder starts as an exact copy of the (pretrained) params, cast to
         # ema_dtype regardless of the student's compute dtype
@@ -631,7 +657,7 @@ class Trainer:
         self.current_epoch = int(epoch) + int(restored.get("epoch_done", 0))
         if "rng" in restored:
             self.rng = jnp.asarray(restored["rng"], dtype=jnp.uint32)
-        print(
+        self.logger.info(
             f"resumed from {path} "
             f"(epoch {self.current_epoch}, step {self.global_step})"
         )
@@ -668,13 +694,13 @@ class Trainer:
         always lines up with a logged eval point."""
         if self.eval_loader is not None:
             metrics = self.eval()
-            print(
+            self.logger.info(
                 f"epoch {self.current_epoch} step {self.global_step} "
                 f"eval_loss {metrics['loss']:.4f} tgt_std {metrics['target_std']:.4f}"
             )
             self._log({f"eval/{k}": v for k, v in metrics.items()})
         path = self.save_checkpoint(epoch_done=epoch_done)
-        print(f"saved {path}")
+        self.logger.info(f"saved {path}")
         return path
 
     # -- loop --------------------------------------------------------------------------
@@ -715,7 +741,7 @@ class Trainer:
                 if due(self.global_step, self.config.log_interval):
                     # only materialize here — float() on every step forces a device sync
                     m = {k: float(v) for k, v in metrics.items()}
-                    print(
+                    self.logger.info(
                         f"epoch {epoch} step {self.global_step} "
                         f"loss {m['loss']:.4f} tgt_std {m['target_std']:.4f} "
                         f"lr {m['lr']:.2e} ema_m {m['ema_momentum']:.6f}"
@@ -742,7 +768,7 @@ class Trainer:
             self._eval_and_save(epoch_done=True)
 
             if stop:
-                print(f"stopping early at step {self.global_step} (max_steps)")
+                self.logger.info(f"stopping early at step {self.global_step} (max_steps)")
                 break
 
         wandb.finish()
