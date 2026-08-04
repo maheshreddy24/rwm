@@ -20,23 +20,23 @@ model:
 #
 dataset:
   train:
-    video_csv: /home/rvm/datasets/ssv2/train.csv
+    video_csv: /home/rvm/datasets/train_dataset_ssv2_kine.csv
     num_source_frames: 4
-    num_target_frames: 2
+    num_target_frames: 4
     max_delta: 48
     frame_size: [256, 256]
     min_duration_sec: 4
   eval:
-    video_csv: /home/rvm/datasets/ssv2/test.csv
+    video_csv: /home/rvm/datasets/test_dataset_ssv2_kine.csv
     num_source_frames: 4
-    num_target_frames: 2
+    num_target_frames: 4
     max_delta: 48
     frame_size: [256, 256]
     min_duration_sec: 4
 
 dataloader:
-  batch_size: 16
-  num_workers: 4
+  batch_size: 32
+  num_workers: 16
 
 trainer:
   checkpoint_dir: checkpoints

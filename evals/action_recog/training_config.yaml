@@ -2,8 +2,8 @@ device: "cuda:0"
 seed: 42
 
 dataset_config_path: "/home/rvm/evals/action_recog/dataset_config.yaml"
-# restored_params_path: "/home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz"
-restored_params_path: "/home/rvm/repre_finetuned.npz"
+restored_params_path: "/home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz"
+# restored_params_path: "/home/rvm/repre_finetuned.npz"
 
 # Optimization fixed across all tasks/models (4D scaling paper, Carreira et al.):
 # 1.28M training examples, batch size 32 -> 40k steps, AdamW, wd 1e-4,

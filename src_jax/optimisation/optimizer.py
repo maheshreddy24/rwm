@@ -5,6 +5,7 @@ import time
 from collections.abc import Mapping
 from typing import Optional
 import logging
+from icecream import ic
 
 import jax
 import jax.numpy as jnp
@@ -47,10 +48,12 @@ def get_logger(log_path):
 
 def _to_numpy_batch(batch):
     """Torch batch (from `RVMDataset.collate_fn`, NHWC) -> numpy, ready for `model.apply`."""
+    # ic(batch['source'].shape)
+    # ic(batch['target'].shape)
     return {
-        "source": batch["source"].numpy(),
-        "target": batch["target"].numpy(),
-        "target_deltas": batch["target_deltas"].numpy().astype(np.int32),
+        "source": batch["source"],
+        "target": batch["target"],
+        "target_deltas": batch["target_deltas"].astype(np.int32),
     }
 
 
@@ -163,6 +166,8 @@ class Trainer:
 
         self.checkpoint_dir = os.path.join(self.config.checkpoint_dir, f"exp_{time.time()}")
         os.makedirs(self.checkpoint_dir, exist_ok=True)
+        self.logger = get_logger(os.path.join(self.checkpoint_dir, "training.log"))
+
 
         self.rng = jax.random.PRNGKey(self.config.seed or 0)
         self.epoch = 0

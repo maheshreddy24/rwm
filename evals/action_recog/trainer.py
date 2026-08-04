@@ -30,7 +30,7 @@ from icecream import ic
 from tqdm import tqdm
 
 from models.readout_head import Readout
-from models.rvm_jax import build_model
+from models.rvm_jax_image import build_model
 from ssv2_inf_dataset import SSv2
 
 #! params from the 4D scaling paper (Carreira et al.), optimization fixed across all tasks/models:
