@@ -24,10 +24,10 @@ class TrainerConfig:
     eps: float = 1e-8
     grad_clip_norm: Optional[float] = 1.0
 
-    # schedule: linear warmup -> cosine decay, stepped every optimizer step
-    num_epochs: int = 2
-    epochs = 4
-    warmup_steps: int = 500
+    # schedule: linear warmup -> cosine decay. Budget is expressed in epochs, not
+    # steps, and warmup is a ratio of the resulting step budget (mirrors EMATrainerConfig).
+    epochs: int = 4
+    warmup_ratio: float = 0.05
     min_lr: float = 1e-6
 
     # loss -- kwargs forwarded to rvm_loss(); paper default is plain L2 over all pixels
@@ -42,6 +42,7 @@ class TrainerConfig:
     # misc
     log_interval: int = 50
     eval_interval: int = 1000
+    save_interval: int = 1000
 
     # wandb
     wandb_project: str = "rvm"

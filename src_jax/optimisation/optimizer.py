@@ -78,9 +78,14 @@ def load_pretrained_params(path: str) -> dict:
 
 
 def build_schedule(config: TrainerConfig, steps_per_epoch: int) -> optax.Schedule:
-    """Linear warmup -> cosine decay to `min_lr`, matching `src/optimisation/optimizer.py`."""
-    total_steps = max(steps_per_epoch * int(config.num_epochs), 1)
-    warmup_steps = steps_per_epoch * int(config.warmup_epochs)
+    """Linear warmup -> cosine decay to `min_lr`.
+
+    Budget is expressed in epochs, not steps, and warmup is a ratio of the resulting
+    step budget -- matching `optimizer_ema.py::build_optimizer`.
+    """
+    total_steps = max(steps_per_epoch * int(config.epochs), 1)
+    warmup_steps = int(round(total_steps * float(config.warmup_ratio)))
+    warmup_steps = max(0, min(warmup_steps, total_steps))
     return optax.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=float(config.lr),
@@ -244,7 +249,7 @@ class Trainer:
         return True
 
     def train(self, num_epochs: Optional[int] = None):
-        num_epochs = num_epochs or int(self.config.num_epochs)
+        num_epochs = num_epochs or int(self.config.epochs)
         for _ in tqdm(range(num_epochs), total=num_epochs, leave=False):
             for batch in tqdm(self.train_loader, total=len(self.train_loader), leave=True):
                 loss = self._train_step(batch)
@@ -259,6 +264,9 @@ class Trainer:
 
                 if self.eval_loader is not None and self.global_step % int(self.config.eval_interval) == 0:
                     self._evaluate_and_log()
+
+                # decoupled from eval so checkpoints keep landing even without an eval_loader
+                if self.global_step % int(self.config.save_interval) == 0:
                     self.save_checkpoint()
 
             self.epoch += 1
