@@ -650,7 +650,7 @@ class Trainer:
         # fixed key on purpose: eval masks should be identical across evaluations so the
         # curve reflects the model, not the draw
         rng = jax.random.PRNGKey(0)
-        for batch in self.eval_loader:
+        for batch in tqdm(self.eval_loader, total = len(self.eval_loader)):
             rng, step_rng = jax.random.split(rng)
             metrics = self.eval_step_fn(
                 self.state.params,
