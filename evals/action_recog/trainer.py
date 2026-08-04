@@ -374,6 +374,8 @@ class Trainer:
 
             # Save checkpoint every epoch
             self.save_checkpoint(epoch=epoch, name=f"epoch_{epoch}.pt")
+            self.evaluate()
+
 
         self.save_checkpoint(epoch=self.epochs - 1, name="final.pt")
     @torch.no_grad()
