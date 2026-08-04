@@ -23,4 +23,8 @@ evals/action_recog/datasets
 *.pth
 
 datasets/kinetics_dataset
+.jax_cache/
 datasets/ssv2
+*.log
+*.wandb
+*.txt
