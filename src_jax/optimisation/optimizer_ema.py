@@ -494,6 +494,8 @@ class Trainer:
             self.config.checkpoint_dir, f"exp_{int(time.time())}"
         )
         os.makedirs(self.checkpoint_dir, exist_ok=True)
+        self.logger = get_logger(os.path.join(self.checkpoint_dir, "training.log"))
+
         self.max_checkpoints_to_keep = 3
         self.rng = jax.random.PRNGKey(self.config.seed or 0)
 
@@ -546,7 +548,6 @@ class Trainer:
                 )
 
         self._init_state()
-        self.logger = get_logger(os.path.join(self.checkpoint_dir, "training.log"))
 
     def _init_state(self):
         self.rng, init_rng, state_rng = jax.random.split(self.rng, 3)

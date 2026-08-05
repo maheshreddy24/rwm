@@ -39,7 +39,7 @@ dataloader:
   num_workers: 16
 
 trainer:
-  checkpoint_dir: checkpoints
+  checkpoint_dir: checkpoints_pixel_recon
   init_params_path: /home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz
   lr: 1.5e-4
   weight_decay: 0.05
@@ -52,4 +52,4 @@ trainer:
   masked_only: false
   norm_pix: false
   log_interval: 100
-  save_interval: 1000
+  save_interval: 2000

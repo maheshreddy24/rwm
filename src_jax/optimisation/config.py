@@ -41,8 +41,8 @@ class TrainerConfig:
 
     # misc
     log_interval: int = 50
-    eval_interval: int = 1000
-    save_interval: int = 1000
+    eval_interval: int = 1500
+    save_interval: int = 2000
 
     # wandb
     wandb_project: str = "rvm"

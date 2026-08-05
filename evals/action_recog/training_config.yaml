@@ -2,7 +2,8 @@ device: "cuda:0"
 seed: 42
 
 dataset_config_path: "/home/rvm/evals/action_recog/dataset_config.yaml"
-restored_params_path: "/home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz"
+restored_params_path: "/home/rvm/rvm_repr_finetune.npz" # finetuned
+# restored_params_path: "/home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz"
 # restored_params_path: "/home/rvm/repre_finetuned.npz"
 
 # Optimization fixed across all tasks/models (4D scaling paper, Carreira et al.):
