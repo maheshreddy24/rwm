@@ -18,14 +18,14 @@ dataset:
     video_csv: /home/rvm/datasets/train_dataset_ssv2_kine.csv
     num_source_frames: 4
     num_target_frames: 4
-    max_delta: 64
+    max_delta: 48
     frame_size: [256, 256]   # must match encoder patch_size (14) so H/patch is an integer grid
     min_duration_sec: 4
   eval:
     video_csv: /home/rvm/datasets/test_dataset_ssv2_kine.csv
     num_source_frames: 4
     num_target_frames: 4
-    max_delta: 64
+    max_delta: 48
     frame_size: [256, 256]
     min_duration_sec: 4
 
