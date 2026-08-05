@@ -54,7 +54,15 @@ def build_dataloader(dataset_config, dataloader_config, shuffle: bool):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/train_ema.yaml")
-    parser.add_argument("--resume", action="store_true", help="resume from the latest checkpoint in checkpoint_dir")
+    parser.add_argument(
+        "--resume",
+        nargs="?",
+        const="__latest__",
+        default=None,
+        metavar="CKPT_PATH",
+        help="resume training; pass a checkpoint path to resume from it, "
+        "or omit the value to resume from the latest checkpoint in checkpoint_dir",
+    )
     args = parser.parse_args()
 
     with open(args.config, "r") as f:
@@ -70,9 +78,10 @@ def main():
     trainer_config = TrainerConfig(**config.get("trainer", {}))
     trainer = Trainer(model, train_loader, eval_loader, trainer_config)
 
-    if args.resume:
-        resumed = trainer.resume()
-        print("resumed from checkpoint" if resumed else "no checkpoint found, starting fresh")
+    if args.resume is not None:
+        ckpt_path = None if args.resume == "__latest__" else args.resume
+        resumed = trainer.resume(ckpt_path)
+        print(f"resumed from checkpoint: {trainer.checkpoint_dir}" if resumed else "no checkpoint found, starting fresh")
 
     trainer.train()
 

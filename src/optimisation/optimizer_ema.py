@@ -175,17 +175,35 @@ class Trainer:
         self.global_step = ckpt.get("global_step", 0)
         return ckpt
 
-    def resume(self):
-        checkpoints = glob.glob(os.path.join(self.checkpoint_dir, "model_epoch*_step*.pth"))
-        if not checkpoints:
-            return False
-        self.load_checkpoint(max(checkpoints, key=os.path.getmtime))
+    def resume(self, path: Optional[str] = None):
+        if path is None:
+            checkpoints = glob.glob(os.path.join(self.checkpoint_dir, "model_epoch*_step*.pth"))
+            if not checkpoints:
+                return False
+            path = max(checkpoints, key=os.path.getmtime)
+        self.load_checkpoint(path)
+        # Keep saving into the resumed run's own experiment folder instead of
+        # the fresh exp_<timestamp> dir created in __init__.
+        self.checkpoint_dir = os.path.dirname(path)
+        self.logger = get_logger(os.path.join(self.checkpoint_dir, "train.log"))
         return True
 
     def train(self, num_epochs: Optional[int] = None):
         num_epochs = num_epochs or int(self.config.num_epochs)
         self._log_params()
-        for _ in tqdm(range(num_epochs), total=num_epochs, leave=False):
+
+        # Resume from the checkpointed epoch; if it was almost done (>=90% of
+        # its steps), skip ahead to the next one instead of redoing it.
+        steps_per_epoch = len(self.train_loader)
+        steps_into_epoch = self.global_step - self.epoch * steps_per_epoch
+        if steps_into_epoch >= 0.9 * steps_per_epoch:
+            self.epoch += 1
+
+        if self.epoch >= num_epochs:
+            self.logger.info(f"resume epoch {self.epoch} >= num_epochs {num_epochs}, nothing to train")
+            return
+
+        for _ in tqdm(range(self.epoch, num_epochs), total=num_epochs - self.epoch, leave=False):
             self.model.train()
             for batch in tqdm(self.train_loader, total=len(self.train_loader), leave=True):
                 loss = self._train_step(batch)
