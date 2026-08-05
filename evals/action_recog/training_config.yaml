@@ -9,7 +9,7 @@ restored_params_path: "/home/rvm/checkpoints_pixel_recon/exp_1785907837.1023088/
 
 # torch state_dict (.pt) for models.rvm_torch.RVM, e.g. converted from restored_params_path.
 # leave empty to run with a random RVM core/decoder (DINOv2 backbone still pretrained).
-rvm_weights_path: ""
+rvm_weights_path: "/home/rvm/checkpoints_ema_dino_backbone/exp_1785924245.177395/model_epoch1_step6000.pth"
 
 # Optimization fixed across all tasks/models (4D scaling paper, Carreira et al.):
 # 1.28M training examples, batch size 32 -> 40k steps, AdamW, wd 1e-4,
@@ -23,13 +23,13 @@ warmup_ratio: 0.05
 min_lr: 1.0e-7
 
 num_epochs: 2
-batch_size: 64
+batch_size: 32
 num_workers: 16
 amp: true
 
 log_interval: 200
 eval_interval: 1000
-checkpoint_dir: "checkpoints_ssv2_acr_representation"
+checkpoint_dir: "checkpoints_ssv2_acr_representation_rd"
 
 wandb_project: "rvm-action-recog"
 wandb_name: "ssv2-readout-run1"

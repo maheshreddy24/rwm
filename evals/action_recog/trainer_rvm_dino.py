@@ -164,7 +164,7 @@ class Trainer:
         self.rd_encoder = RVM(encoder_name="facebook/dinov2-small")
         if self.config.rvm_weights_path:
             state_dict = torch.load(self.config.rvm_weights_path, map_location="cpu")
-            self.rd_encoder.load_state_dict(state_dict)
+            self.rd_encoder.load_state_dict(state_dict['model'])
             self.logger.info(f"loaded RVM weights from {self.config.rvm_weights_path}")
         # freeze the backbone
         for p in self.rd_encoder.parameters():
@@ -205,7 +205,9 @@ class Trainer:
         target = frames[:, -1:, :, :, :].to(self.device)  # (B, 1, C, H, W)
         deltas = torch.zeros((bs, 1), dtype=torch.int64, device=self.device)  # (B, 1), matches Tt=1
 
-        with torch.no_grad():
+        # with torch.no_grad():
+        #     output = self.rd_encoder(source, target, deltas)
+        with torch.no_grad(), torch.amp.autocast(device_type=self.device_type, enabled=self.config.amp):
             output = self.rd_encoder(source, target, deltas)
 
         return output["memory"][..., 1:, :]  # (B, T, N, 384), CLS token dropped
