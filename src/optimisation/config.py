@@ -45,7 +45,7 @@ class TrainerConfig:
 
     # misc
     amp: bool = False
-    log_interval: int = 50  # console/log-file print frequency, in steps
+    log_interval: int = 200  # console/log-file print frequency, in steps
 
     # wandb
     wandb_project: str = "rvm_dinov2"
