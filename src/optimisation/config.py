@@ -8,8 +8,9 @@ import torch
 class TrainerConfig:
     """Hyperparameters for `Trainer`. Pass an instance (or overrides via kwargs) in.
 
-    All schedule/cadence fields (num_epochs, warmup_epochs, save_every_epochs,
-    eval_every_epochs) are counted in epochs, not optimizer steps.
+    `num_epochs` is a count of full passes over `train_loader`; `warmup_ratio` is a
+    fraction of the resulting epochs*steps_per_epoch budget. `save_every_steps` and
+    `eval_every_steps` are counted in optimizer steps, not epochs.
     """
 
     # runtime
@@ -28,7 +29,7 @@ class TrainerConfig:
 
     # schedule: linear warmup -> cosine decay to `min_lr_ratio` * lr, per group
     num_epochs: int = 5
-    warmup_epochs: int = 1
+    warmup_ratio: float = 0.05
     min_lr_ratio: float = 0.01
 
     # EMA teacher: exponential moving average of the vision encoder, used to
@@ -37,9 +38,10 @@ class TrainerConfig:
     momentum_warmup_steps: int = 2000
     normalize_target: bool = True  # layernorm (no affine) the EMA representation
 
-    # cadence, in epochs
-    save_every_epochs: int = 1
-    eval_every_epochs: int = 1
+    # cadence, in optimizer steps. During the first epoch eval runs every step;
+    # after that it runs every 2 * eval_every_steps (see Trainer.train).
+    save_every_steps: int = 1000
+    eval_every_steps: int = 1000
 
     # misc
     amp: bool = False

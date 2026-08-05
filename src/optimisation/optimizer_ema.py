@@ -121,7 +121,7 @@ class Trainer:
 
         steps_per_epoch = len(self.train_loader)
         total_steps = steps_per_epoch * int(self.config.num_epochs)
-        warmup_steps = steps_per_epoch * int(self.config.warmup_epochs)
+        warmup_steps = int(round(total_steps * float(self.config.warmup_ratio)))
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer,
             lr_lambda=lambda step: _warmup_cosine_factor(
@@ -196,11 +196,16 @@ class Trainer:
                     self.logger.info(f"epoch {self.epoch} step {self.global_step} loss {loss:.4f} lr {lr:.2e}")
                     wandb.log({"train/loss": loss, "train/lr": lr, "epoch": self.epoch}, step=self.global_step)
 
+                if self.global_step % int(self.config.save_every_steps) == 0:
+                    self.save_checkpoint()
+
+                # first epoch: eval every step (to catch early instabilities); after
+                # that, eval every 2 * eval_every_steps.
+                eval_every = 1 if self.epoch == 0 else 2 * int(self.config.eval_every_steps)
+                if self.eval_loader is not None and self.global_step % eval_every == 0:
+                    self._evaluate_and_log()
+
             self.epoch += 1
-            if self.epoch % int(self.config.save_every_epochs) == 0:
-                self.save_checkpoint()
-            if self.eval_loader is not None and self.epoch % int(self.config.eval_every_epochs) == 0:
-                self._evaluate_and_log()
 
     def _evaluate_and_log(self):
         eval_loss = self.eval()
