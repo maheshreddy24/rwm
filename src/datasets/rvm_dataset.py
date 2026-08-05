@@ -171,6 +171,24 @@ class RVMDataset(Dataset):
         target = frames[Ts:]
         return source, target, torch.from_numpy(deltas)
 
+    # def __getitem__(self, index):
+    #     # Try up to 20 times to find a valid sample.
+    #     for _ in range(20):
+    #         video_path = self.data_paths[index]
+    #         sample = self._load_frames(video_path)
+
+    #         if sample is not None:
+    #             source, target, target_deltas = sample
+    #             return {
+    #                 "source": source,
+    #                 "target": target,
+    #                 "target_deltas": target_deltas,
+    #             }
+
+    #         index = int(self.rng.integers(len(self)))
+
+    #     # raise RuntimeError("Could not load a valid video after 20 attempts.")
+
     def __getitem__(self, index):
         # Try up to 20 times to find a valid sample.
         for _ in range(20):
@@ -187,8 +205,36 @@ class RVMDataset(Dataset):
 
             index = int(self.rng.integers(len(self)))
 
-        raise RuntimeError("Could not load a valid video after 20 attempts.")
+        # Fallback: return a random dummy sample.
+        print("returning random")
+        source = torch.rand(
+            self.num_source_frames,
+            3,
+            self.frame_size[0],
+            self.frame_size[1],
+            dtype=torch.float32,
+        )
 
+        target = torch.rand(
+            self.num_target_frames,
+            3,
+            self.frame_size[0],
+            self.frame_size[1],
+            dtype=torch.float32,
+        )
+
+        target_deltas = torch.randint(
+            low=4,
+            high=self.max_delta + 1,
+            size=(self.num_target_frames,),
+            dtype=torch.long,
+        )
+
+        return {
+            "source": source,
+            "target": target,
+            "target_deltas": target_deltas,
+        }
     def __len__(self):
         return len(self.data_paths)
 

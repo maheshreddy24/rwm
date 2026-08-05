@@ -11,5 +11,5 @@ flax
 decord
 einops
 tqdm
-
+transformers
 wandb
