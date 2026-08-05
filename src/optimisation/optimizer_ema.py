@@ -13,8 +13,6 @@ import wandb
 from torch.optim.swa_utils import AveragedModel
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-
-from icecream import ic
 from .config import TrainerConfig
 
 
@@ -190,47 +188,27 @@ class Trainer:
         for _ in tqdm(range(num_epochs), total=num_epochs, leave=False):
             self.model.train()
             for batch in tqdm(self.train_loader, total=len(self.train_loader), leave=True):
-                # print("iteration!!!!")
-                ic(
-                    self.global_step,
-                    self.global_step % 100,
-                    self.global_step > 10,
-                )
                 loss = self._train_step(batch)
                 self.global_step += 1
-                ic(self.config.log_interval)
-                ic(self.config.save_every_steps)
-                # print(self.global_step)
-                if self.global_step % int(self.config.log_interval) == 0 and self.global_step > 10:
-                    # print("inside log interval")
+
+                if self.global_step % int(self.config.log_interval) == 0:
                     lr = self.optimizer.param_groups[-1]["lr"]
-                    # print("logignig")
                     self.logger.info(f"epoch {self.epoch} step {self.global_step} loss {loss:.4f} lr {lr:.2e}")
                     wandb.log({"train/loss": loss, "train/lr": lr, "epoch": self.epoch}, step=self.global_step)
-                    # print("logged")
-                if self.global_step % int(self.config.save_every_steps) == 0 and self.global_step > 10:
-                    # print("inside save checkpoint")
-                    self.save_checkpoint()
-                    # print("checkpoint saved")
 
-                # first epoch: eval every step (to catch early instabilities); after
-                # that, eval every 2 * eval_every_steps.
-                eval_every = 1 if self.epoch == 0 else 2 * int(self.config.eval_every_steps)
-                if self.eval_loader is not None and self.global_step % eval_every == 0 and self.global_step > 10: 
-                    # print("saving")
+                if self.global_step % int(self.config.save_every_steps) == 0:
+                    self.save_checkpoint()
+
+                if self.eval_loader is not None and self.global_step % int(self.config.eval_every_steps) == 0:
                     self._evaluate_and_log()
-                    
 
             self.epoch += 1
 
     def _evaluate_and_log(self):
-        # print("inside eval & log")
         eval_loss = self.eval()
-        # print("eval loss computed")
         self.logger.info(f"epoch {self.epoch} step {self.global_step} eval_loss {eval_loss:.4f}")
         wandb.log({"eval/loss": eval_loss, "epoch": self.epoch}, step=self.global_step)
         self.model.train()
-        # print("going back from eval")
 
     def _teacher_representation(self, target: torch.Tensor) -> torch.Tensor:
         """EMA-encoder representation of the *unmasked* target frames.
