@@ -46,5 +46,5 @@ class TrainerConfig:
     log_interval: int = 50  # console/log-file print frequency, in steps
 
     # wandb
-    wandb_project: str = "rvm"
+    wandb_project: str = "rvm_dinov2"
     wandb_name: Optional[str] = None

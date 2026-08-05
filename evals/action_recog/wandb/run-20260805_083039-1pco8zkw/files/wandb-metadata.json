@@ -1,0 +1,44 @@
+{
+  "os":  "Linux-6.8.0-100-generic-x86_64-with-glibc2.35",
+  "python":  "CPython 3.10.20",
+  "startedAt":  "2026-08-05T08:30:39.953973Z",
+  "args":  [
+    "--config",
+    "training_config.yaml"
+  ],
+  "program":  "/home/rvm/evals/action_recog/trainer.py",
+  "codePath":  "evals/action_recog/trainer.py",
+  "codePathLocal":  "trainer.py",
+  "git":  {
+    "remote":  "https://github.com/maheshreddy24/rvm.git",
+    "commit":  "dfca7edca3fac6f763967a5c4bedf7f653e933ab"
+  },
+  "email":  "maheshreddy0299@gmail.com",
+  "root":  "/home/rvm/evals/action_recog",
+  "host":  "309725de6b6c",
+  "executable":  "/root/miniconda3/envs/gssl/bin/python3",
+  "cpu_count":  64,
+  "cpu_count_logical":  128,
+  "gpu":  "NVIDIA A100-SXM4-80GB",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "942211411968",
+      "used":  "766019936256"
+    }
+  },
+  "memory":  {
+    "total":  "1081751564288"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA A100-SXM4-80GB",
+      "memoryTotal":  "85899345920",
+      "cudaCores":  6912,
+      "architecture":  "Ampere",
+      "uuid":  "GPU-2ba922ae-9607-5491-dc28-8c26a6edce36"
+    }
+  ],
+  "cudaVersion":  "13.0",
+  "writerId":  "4hb7b26hsx3lg4osm72zaaq7snmqwp52"
+}

@@ -1,0 +1,116 @@
+_wandb:
+    value:
+        cli_version: 0.28.1
+        e:
+            4hb7b26hsx3lg4osm72zaaq7snmqwp52:
+                args:
+                    - --config
+                    - training_config.yaml
+                codePath: evals/action_recog/trainer.py
+                codePathLocal: trainer.py
+                cpu_count: 64
+                cpu_count_logical: 128
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "942211411968"
+                        used: "766019936256"
+                email: maheshreddy0299@gmail.com
+                executable: /root/miniconda3/envs/gssl/bin/python3
+                git:
+                    commit: dfca7edca3fac6f763967a5c4bedf7f653e933ab
+                    remote: https://github.com/maheshreddy24/rvm.git
+                gpu: NVIDIA A100-SXM4-80GB
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-2ba922ae-9607-5491-dc28-8c26a6edce36
+                host: 309725de6b6c
+                memory:
+                    total: "1081751564288"
+                os: Linux-6.8.0-100-generic-x86_64-with-glibc2.35
+                program: /home/rvm/evals/action_recog/trainer.py
+                python: CPython 3.10.20
+                root: /home/rvm/evals/action_recog
+                startedAt: "2026-08-05T08:30:39.953973Z"
+                writerId: 4hb7b26hsx3lg4osm72zaaq7snmqwp52
+        m: []
+        python_version: 3.10.20
+        t:
+            "1":
+                - 1
+                - 2
+                - 3
+                - 5
+                - 12
+                - 41
+                - 45
+                - 53
+            "2":
+                - 1
+                - 2
+                - 3
+                - 5
+                - 12
+                - 41
+                - 45
+                - 53
+            "3":
+                - 13
+                - 16
+                - 61
+            "4": 3.10.20
+            "5": 0.28.1
+            "12": 0.28.1
+            "13": linux-x86_64
+amp:
+    value: true
+batch_size:
+    value: 64
+betas:
+    value:
+        - 0.9
+        - 0.999
+checkpoint_dir:
+    value: checkpoints_ssv2_acr_representation
+dataset_config_path:
+    value: /home/rvm/evals/action_recog/dataset_config.yaml
+device:
+    value: cuda:0
+eps:
+    value: 1e-08
+eval_interval:
+    value: 1000
+log_interval:
+    value: 200
+lr:
+    value: 0.0003
+min_lr:
+    value: 1e-07
+num_epochs:
+    value: 2
+num_workers:
+    value: 16
+readout_dim:
+    value: 768
+readout_in_dim:
+    value: 384
+readout_num_classes:
+    value: 174
+readout_num_heads:
+    value: 12
+restored_params_path:
+    value: /home/rvm/checkpoints_pixel_recon/exp_1785907837.1023088/model_1_7721.npz
+seed:
+    value: 42
+wandb_name:
+    value: ssv2-readout-run1
+wandb_project:
+    value: rvm-action-recog
+warmup_ratio:
+    value: 0.05
+weight_decay:
+    value: 0.0001
