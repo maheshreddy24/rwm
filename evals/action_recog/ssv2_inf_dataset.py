@@ -151,7 +151,7 @@ class SSv2(Dataset):
             img = torch.from_numpy(np.array(img)).float() / 255.0
             frames.append(img)
 
-        return torch.stack(frames, dim=0)  # (T, H, W, C)
+        return torch.stack(frames, dim=0).permute(0, 3, 1, 2)  # (T, H, W, C)
 
     def __getitem__(self, idx):
         frames = self._load_video(self.video_paths[idx], self.video_strides[idx])
