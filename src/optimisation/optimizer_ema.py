@@ -192,11 +192,12 @@ class Trainer:
         num_epochs = num_epochs or int(self.config.num_epochs)
         self._log_params()
 
-        # Resume from the checkpointed epoch; if it was almost done (>=90% of
-        # its steps), skip ahead to the next one instead of redoing it.
-        steps_per_epoch = len(self.train_loader)
-        steps_into_epoch = self.global_step - self.epoch * steps_per_epoch
-        if steps_into_epoch >= 0.9 * steps_per_epoch:
+        # Dataloader position isn't checkpointed, so a resumed epoch always
+        # restarts from its first batch. Rather than guess how far into that
+        # epoch we'd already gotten (unreliable if batch_size changed since the
+        # checkpoint was saved, since global_step was counted under the old
+        # steps_per_epoch), just skip straight to the next epoch on resume.
+        if self.global_step > 0:
             self.epoch += 1
 
         if self.epoch >= num_epochs:
