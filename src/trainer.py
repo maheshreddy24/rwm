@@ -1,7 +1,7 @@
 """Entry point: wires RVMDataset -> RVM -> Trainer and runs training.
 
 Usage:
-    python src/trainer.py --config configs/train.yaml [--resume]
+    python src/trainer.py --config configs/train_ema.yaml [--resume]
 """
 
 import argparse
@@ -13,35 +13,14 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.datasets.rvm_dataset import RVMDataset, set_seed
+from src.datasets.rvm_dataset import RVMDataset
 from src.models.rvm import RVM
 from src.optimisation.config import TrainerConfig
-from src.optimisation.optimizer import Trainer
+from src.optimisation.optimizer_ema import Trainer
 import torch
 import random
 import numpy as np
-import os
-import logging
 
-
-def get_logger(log_path):
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    logger = logging.getLogger("training_logger")
-    logger.setLevel(logging.INFO)
-    logger.propagate = False
-
-    if not logger.handlers:
-        formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-        file_handler = logging.FileHandler(log_path, mode="a")
-        file_handler.setLevel(logging.INFO)
-        file_handler.setFormatter(formatter)
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-        console_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-        logger.addHandler(console_handler)
-
-    return logger
 
 
 def set_seed(seed: int):
@@ -74,8 +53,8 @@ def build_dataloader(dataset_config, dataloader_config, shuffle: bool):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/train.yaml")
-    parser.add_argument("--resume", action="store_true", help="resume from checkpoint_dir/last.pt")
+    parser.add_argument("--config", default="configs/train_ema.yaml")
+    parser.add_argument("--resume", action="store_true", help="resume from the latest checkpoint in checkpoint_dir")
     args = parser.parse_args()
 
     with open(args.config, "r") as f:

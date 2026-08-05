@@ -44,6 +44,10 @@ class Trainer:
         self.config = config or TrainerConfig()
         self.device = self.config.device
         self.model = model.to(self.device)
+        #! ema of the vision encoder
+        self.ema_model = None
+
+
         self.train_loader = train_loader
         self.eval_loader = eval_loader
         self.checkpoint_dir = os.path.join(self.config.checkpoint_dir, f'exp_{time.time()}')

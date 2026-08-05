@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import torch
@@ -6,33 +6,44 @@ import torch
 
 @dataclass
 class TrainerConfig:
-    """Hyperparameters for `Trainer`. Pass an instance (or overrides via kwargs) in."""
+    """Hyperparameters for `Trainer`. Pass an instance (or overrides via kwargs) in.
+
+    All schedule/cadence fields (num_epochs, warmup_epochs, save_every_epochs,
+    eval_every_epochs) are counted in epochs, not optimizer steps.
+    """
 
     # runtime
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     checkpoint_dir: str = "checkpoints"
     seed: Optional[int] = None
 
-    # optimizer -- AdamW with the betas/wd used by MAE-style ViT recipes
-    lr: float = 1.5e-4
+    # optimizer -- AdamW, two param groups: the DINO vision encoder gets a much
+    # lower lr than the recurrent core / decoder, which are trained from scratch.
+    lr: float = 1.5e-4          # recurrent core + decoder + repr_head
+    encoder_lr: float = 1.5e-5  # DINO vision encoder (backbone)
     weight_decay: float = 0.05
     betas: Tuple[float, float] = (0.9, 0.95)
     eps: float = 1e-8
     grad_clip_norm: Optional[float] = 1.0
 
-    # schedule: linear warmup -> cosine decay, stepped every optimizer step
-    num_epochs: int = 100
-    warmup_epochs: int = 5
-    min_lr: float = 1e-6
+    # schedule: linear warmup -> cosine decay to `min_lr_ratio` * lr, per group
+    num_epochs: int = 5
+    warmup_epochs: int = 1
+    min_lr_ratio: float = 0.01
 
-    # loss -- kwargs forwarded to RVM.loss(); paper default is plain L2 over all pixels
-    masked_only: bool = False
-    norm_pix: bool = False
+    # EMA teacher: exponential moving average of the vision encoder, used to
+    # produce the target representation for masked target patches.
+    momentum_decay: float = 0.999
+    momentum_warmup_steps: int = 2000
+    normalize_target: bool = True  # layernorm (no affine) the EMA representation
+
+    # cadence, in epochs
+    save_every_epochs: int = 1
+    eval_every_epochs: int = 1
 
     # misc
     amp: bool = False
-    log_interval: int = 50
-    eval_interval: int = 1000
+    log_interval: int = 50  # console/log-file print frequency, in steps
 
     # wandb
     wandb_project: str = "rvm"

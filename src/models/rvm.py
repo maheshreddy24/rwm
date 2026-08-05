@@ -211,7 +211,8 @@ class RVM(nn.Module):
         self.max_delta = max_delta
 
         self.decoder = CrossAttentionTransformer(dec_dim, dec_heads, dec_layers, dec_mlp)
-        self.head = nn.Linear(dec_dim, self.patch * self.patch * 3)
+        # predicts into the (EMA) encoder's representation space, not pixel space
+        self.repr_head = nn.Linear(dec_dim, self.d_enc)
 
         self.register_buffer("_posenc", torch.zeros(0), persistent=False)
 
@@ -332,50 +333,15 @@ class RVM(nn.Module):
         kv = kv.reshape(B * Tt, -1, self.dec_dim)                       # (B*Tt, L, Dd)   copies here
 
         decoded = self.decoder(queries, kv)                             # (B*Tt, 1+N, Dd)
-        pred = self.head(decoded[:, 1:])                                # (B*Tt, N, p*p*3)
+        decoded_representation = self.repr_head(decoded)                # (B*Tt, 1+N, D)
 
         return {
-            "pred": pred.view(B, Tt, N, -1),                            # (B, Tt, N, p*p*3)
             "mask": mask.view(B, Tt, N),                                # (B, Tt, N)  1 = was masked
             "memory": memory,                                           # (B, Ts, 1+N, D)  o_1..o_Ts
             "state": state,                                             # (B, 1+N, D)      s_Ts
             "grid": grid,
+            "decoded_representation": decoded_representation.view(B, Tt, N + 1, -1),  # (B, Tt, 1+N, D)
         }
-
-
-    def loss(
-        self,
-        out: dict,
-        target: torch.Tensor,
-        masked_only: bool = False,
-        norm_pix: bool = False,
-    ):
-        """L2 reconstruction loss. `target`: (B, Tt, 3, H, W).
-
-        Paper default (Sec. 3.1, "Loss"): plain L2 over *all* reconstructed pixels,
-        with no patch-level normalization. `masked_only=True` / `norm_pix=True`
-        switch to the SiamMAE/MAE convention instead.
-        """
-        B, Tt = target.shape[:2]
-        gt = patchify(target.reshape(B * Tt, *target.shape[2:]), self.patch)
-        if norm_pix:
-            mu = gt.mean(dim=-1, keepdim=True)
-            var = gt.var(dim=-1, keepdim=True)
-            gt = (gt - mu) / (var + 1e-6).sqrt()
-
-        pred = out["pred"].reshape(B * Tt, *out["pred"].shape[2:])
-        per_patch = (pred.float() - gt.float()).pow(2).mean(dim=-1)
-
-        if not masked_only:
-            return per_patch.mean()
-        mask = out["mask"].reshape(B * Tt, -1)
-        return (per_patch * mask).sum() / mask.sum().clamp(min=1.0)
-
-    def reconstruct_image(self, out: dict) -> torch.Tensor:
-        """Predicted patches -> (B, Tt, 3, H, W). Note: only masked patches are supervised."""
-        B, Tt, N, _ = out["pred"].shape
-        img = unpatchify(out["pred"].reshape(B * Tt, N, -1), self.patch, out["grid"])
-        return img.view(B, Tt, *img.shape[1:])
 
 
 if __name__ == "__main__":
@@ -383,9 +349,8 @@ if __name__ == "__main__":
     model = RVM(encoder_name="facebook/dinov2-small")
 
     src = torch.randn(2, 4, 3, 224, 224)
-    tgt = torch.randn(2, 2, 3, 224, 224)
-    deltas = torch.tensor([[4, 8], [2, 6]])
+    tgt = torch.randn(2, 4, 3, 224, 224)
+    deltas = torch.tensor([[4, 8, 12, 16], [2, 6, 10, 14]], dtype=torch.int64)
 
     out = model(src, tgt, deltas)
     print({k: tuple(v.shape) for k, v in out.items() if torch.is_tensor(v)})
-    print("loss:", model.loss(out, tgt).item())
