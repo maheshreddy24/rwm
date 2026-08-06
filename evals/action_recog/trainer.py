@@ -112,7 +112,7 @@ def _build_forward_fn(rvm_model):
         )
         # cast on-device: bfloat16 arrays don't cross the jax->numpy->torch
         # boundary cleanly, so land on a real float32 before returning.
-        return out["features"].astype(jnp.float32)
+        return out["features"][..., 1:, :].astype(jnp.float32)  # drop CLS token, matches Readout's (B, T, K, C)
 
     return jax.jit(_forward)
 
@@ -232,7 +232,8 @@ class Trainer:
             self.epochs += 2
 
     def _extract_representation(self, frames_np: np.ndarray) -> torch.Tensor:
-        """frames_np: (B, T, H, W, C) clip -> (B, T, N, 384) frozen backbone features."""
+        """frames_np: (B, T, C, H, W) clip -> (B, T, N, 384) frozen backbone features."""
+        frames_np = np.transpose(frames_np, (0, 1, 3, 4, 2))     # (B, T, H, W, C), channels-last for the JAX model
         B, T, H, W, C = frames_np.shape
         source = frames_np                                       # (B, T, H, W, C)
         target = frames_np[:, -1:, :, :, :]                      # (B, 1, H, W, C)  <- keep the axis
