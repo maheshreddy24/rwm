@@ -1,0 +1,44 @@
+{
+  "os":  "Linux-6.8.0-100-generic-x86_64-with-glibc2.35",
+  "python":  "CPython 3.10.20",
+  "startedAt":  "2026-08-06T07:34:20.716278Z",
+  "args":  [
+    "--config",
+    "training_config.yaml"
+  ],
+  "program":  "/home/rvm/evals/action_recog/trainer_rvm_dino.py",
+  "codePath":  "evals/action_recog/trainer_rvm_dino.py",
+  "codePathLocal":  "trainer_rvm_dino.py",
+  "git":  {
+    "remote":  "https://github.com/maheshreddy24/rvm.git",
+    "commit":  "2bc2b02827ce9fa047ad3ab2f8cc7f7928adc1b3"
+  },
+  "email":  "maheshreddy0299@gmail.com",
+  "root":  "/home/rvm/evals/action_recog",
+  "host":  "8b3dedca400e",
+  "executable":  "/root/miniconda3/envs/gssl/bin/python3",
+  "cpu_count":  32,
+  "cpu_count_logical":  64,
+  "gpu":  "NVIDIA A100-PCIE-40GB",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "469657346048",
+      "used":  "439017316352"
+    }
+  },
+  "memory":  {
+    "total":  "540682485760"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA A100-PCIE-40GB",
+      "memoryTotal":  "42949672960",
+      "cudaCores":  6912,
+      "architecture":  "Ampere",
+      "uuid":  "GPU-c34f91bb-dac6-2df6-b36a-27f6ae4f3f62"
+    }
+  ],
+  "cudaVersion":  "13.0",
+  "writerId":  "9ugda6jyowcdbr66mwvi1uuyg79it0lt"
+}
