@@ -1,7 +1,7 @@
 """Entry point: wires RVMDataset -> RVM -> Trainer and runs training.
 
 Usage:
-    python src/trainer.py --config configs/train_ema.yaml --resume /home/rvm/checkpoints_ema_dino_backbone/exp_1785924245.177395/model_epoch1_step6000.pth
+python src/trainer.py --config configs/train_ema.yaml --resume /home/rvm/checkpoints_ema_dino_backbone/exp_1785924245.177395/model_epoch2_step10000.pth
 """
 
 import argparse

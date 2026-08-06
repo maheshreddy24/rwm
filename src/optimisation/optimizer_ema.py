@@ -102,7 +102,7 @@ class Trainer:
         self.scaler = torch.amp.GradScaler(enabled=self.config.amp and self.device == "cuda")
         self.epoch = 0
         self.global_step = 0
-
+        self.local_step =  0
         self.init_optim()
 
     def init_optim(self):
@@ -155,6 +155,7 @@ class Trainer:
                 "epoch": self.epoch,
                 "global_step": self.global_step,
                 "config": asdict(self.config),
+                "local_step": self.local_step,
             },
             path,
         )
@@ -206,9 +207,10 @@ class Trainer:
 
         for _ in tqdm(range(self.epoch, num_epochs), total=num_epochs - self.epoch, leave=False):
             self.model.train()
-            for batch in tqdm(self.train_loader, total=len(self.train_loader), leave=True):
+            for step, batch in tqdm(enumerate(self.train_loader), total=len(self.train_loader), leave=True):
                 loss = self._train_step(batch)
                 self.global_step += 1
+                self.local_step = step
 
                 if self.global_step % int(self.config.log_interval) == 0:
                     lr = self.optimizer.param_groups[-1]["lr"]
