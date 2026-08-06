@@ -3,13 +3,14 @@ seed: 42
 
 dataset_config_path: "/home/rvm/evals/action_recog/dataset_config.yaml"
 # restored_params_path: "/home/rvm/rvm_repr_finetune.npz" # finetuned
-restored_params_path: "/home/rvm/checkpoints_pixel_recon/exp_1785907837.1023088/model_1_7721.npz"
+# restored_params_path: "/home/rvm/checkpoints_pixel_recon/exp_1785907837.1023088/model_1_7721.npz"
+restored_params_path: "/home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz"
 # restored_params_path: "/home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz"
 # restored_params_path: "/home/rvm/repre_finetuned.npz"
 
 # torch state_dict (.pt) for models.rvm_torch.RVM, e.g. converted from restored_params_path.
 # leave empty to run with a random RVM core/decoder (DINOv2 backbone still pretrained).
-rvm_weights_path: "/home/rvm/checkpoints_ema_dino_backbone/exp_1785924245.177395/model_epoch4_step17000.pth"
+# rvm_weights_path: "/home/rvm/checkpoints_ema_dino_backbone/exp_1785924245.177395/model_epoch4_step17000.pth"
 
 # Optimization fixed across all tasks/models (4D scaling paper, Carreira et al.):
 # 1.28M training examples, batch size 32 -> 40k steps, AdamW, wd 1e-4,
