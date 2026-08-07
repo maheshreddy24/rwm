@@ -1,0 +1,44 @@
+{
+  "os":  "Linux-6.8.0-71-generic-x86_64-with-glibc2.35",
+  "python":  "CPython 3.10.20",
+  "startedAt":  "2026-08-07T03:26:45.227189Z",
+  "args":  [
+    "--config",
+    "training_config.yaml"
+  ],
+  "program":  "/home/rvm/evals/action_recog/trainer_rvm_dino.py",
+  "codePath":  "evals/action_recog/trainer_rvm_dino.py",
+  "codePathLocal":  "trainer_rvm_dino.py",
+  "git":  {
+    "remote":  "https://github.com/maheshreddy24/rvm.git",
+    "commit":  "09c2e11d22c31fe27a72b04dcd606544d1db218c"
+  },
+  "email":  "maheshreddy0299@gmail.com",
+  "root":  "/home/rvm/evals/action_recog",
+  "host":  "a012cc319b46",
+  "executable":  "/root/miniconda3/envs/gssl/bin/python3",
+  "cpu_count":  128,
+  "cpu_count_logical":  256,
+  "gpu":  "NVIDIA L4",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "1098974756864",
+      "used":  "318841573376"
+    }
+  },
+  "memory":  {
+    "total":  "1217093586944"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA L4",
+      "memoryTotal":  "24152899584",
+      "cudaCores":  7424,
+      "architecture":  "Ada",
+      "uuid":  "GPU-519f5005-fb95-5abe-69ff-86d07ea2d157"
+    }
+  ],
+  "cudaVersion":  "13.0",
+  "writerId":  "xp1r7tpn64fsk42zntvjef7o706gi4hf"
+}

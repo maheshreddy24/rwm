@@ -162,10 +162,10 @@ class Trainer:
         self.logger = get_logger(os.path.join(self.checkpoint_dir, "training.log"))
 
         self.rd_encoder = RVM(encoder_name="facebook/dinov2-small")
-        if self.config.rvm_weights_path:
-            state_dict = torch.load(self.config.rvm_weights_path, map_location="cpu")
-            self.rd_encoder.load_state_dict(state_dict['model'])
-            self.logger.info(f"loaded RVM weights from {self.config.rvm_weights_path}")
+        # if self.config.rvm_weights_path:
+            # state_dict = torch.load(self.config.rvm_weights_path, map_location="cpu")
+            # self.rd_encoder.load_state_dict(state_dict['model'])
+            # self.logger.info(f"loaded RVM weights from {self.config.rvm_weights_path}")
         # freeze the backbone
         for p in self.rd_encoder.parameters():
             p.requires_grad = False

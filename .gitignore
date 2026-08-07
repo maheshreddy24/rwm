@@ -28,3 +28,4 @@ datasets/ssv2
 *.log
 *.wandb
 *.txt
+epic-kitchens-download-scripts
