@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import wandb
-from torch.optim.swa_utils import AveragedModel
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from .config import TrainerConfig
@@ -50,27 +49,9 @@ def _unpack_batch(batch):
     return batch
 
 
-class EMAAvgFn:
-    """multi_avg_fn for `AveragedModel`: decay ramps up to `target_decay` over
-    `warmup_steps`, then holds constant."""
-
-    def __init__(self, target_decay: float = 0.999, warmup_steps: int = 2000):
-        self.target_decay = target_decay
-        self.warmup_steps = warmup_steps
-        self.step_count = 0
-
-    def __call__(self, ema_param_list, current_param_list, num_averaged):
-        self.step_count += 1
-        if self.step_count < self.warmup_steps:
-            decay = min(self.target_decay, (1 + self.step_count) / (10 + self.step_count))
-        else:
-            decay = self.target_decay
-        torch._foreach_lerp_(ema_param_list, current_param_list, 1 - decay)
-
-
 class Trainer:
     """Trains RVM with a representation-space loss: the decoder predicts, for
-    masked target patches, the representation an EMA copy of the vision encoder
+    masked target patches, the representation the frozen vision encoder
     produces from the *unmasked* target frame."""
 
     def __init__(
@@ -84,11 +65,8 @@ class Trainer:
         self.device = self.config.device
         self.model = model.to(self.device)
 
-        # EMA teacher for the vision encoder only -- produces representation targets.
-        self.ema_fn = EMAAvgFn(self.config.momentum_decay, self.config.momentum_warmup_steps)
-        self.ema_model = AveragedModel(self.model.encoder, multi_avg_fn=self.ema_fn)
-        self.ema_model.eval()
-        for p in self.ema_model.parameters():
+        self.target_encoder = model.encoder  # frozen; shared weights, no separate EMA copy
+        for p in self.target_encoder.parameters():
             p.requires_grad_(False)
 
         self.train_loader = train_loader
@@ -106,11 +84,9 @@ class Trainer:
         self.init_optim()
 
     def init_optim(self):
-        encoder_params = list(self.model.encoder.parameters())
         other_params = [p for n, p in self.model.named_parameters() if not n.startswith("encoder.")]
         self.optimizer = torch.optim.AdamW(
             [
-                {"params": encoder_params, "lr": float(self.config.encoder_lr)},
                 {"params": other_params, "lr": float(self.config.lr)},
             ],
             weight_decay=float(self.config.weight_decay),
@@ -148,8 +124,6 @@ class Trainer:
         torch.save(
             {
                 "model": self.model.state_dict(),
-                "ema_model": self.ema_model.state_dict(),
-                "ema_step_count": self.ema_fn.step_count,
                 "optimizer": self.optimizer.state_dict(),
                 "scheduler": self.scheduler.state_dict() if self.scheduler else None,
                 "epoch": self.epoch,
@@ -165,15 +139,13 @@ class Trainer:
     def load_checkpoint(self, path: str, load_optim: bool = True):
         ckpt = torch.load(path, map_location=self.device)
         self.model.load_state_dict(ckpt["model"])
-        if ckpt.get("ema_model") is not None:
-            self.ema_model.load_state_dict(ckpt["ema_model"])
-        self.ema_fn.step_count = ckpt.get("ema_step_count", 0)
         if load_optim and ckpt.get("optimizer") is not None:
             self.optimizer.load_state_dict(ckpt["optimizer"])
         if self.scheduler is not None and ckpt.get("scheduler") is not None:
             self.scheduler.load_state_dict(ckpt["scheduler"])
         self.epoch = ckpt.get("epoch", 0)
         self.global_step = ckpt.get("global_step", 0)
+        self.local_step = ckpt.get("local_step", 0)
         return ckpt
 
     def resume(self, path: Optional[str] = None):
@@ -183,8 +155,6 @@ class Trainer:
                 return False
             path = max(checkpoints, key=os.path.getmtime)
         self.load_checkpoint(path)
-        # Keep saving into the resumed run's own experiment folder instead of
-        # the fresh exp_<timestamp> dir created in __init__.
         self.checkpoint_dir = os.path.dirname(path)
         self.logger = get_logger(os.path.join(self.checkpoint_dir, "train.log"))
         return True
@@ -193,13 +163,9 @@ class Trainer:
         num_epochs = num_epochs or int(self.config.num_epochs)
         self._log_params()
 
-        # Dataloader position isn't checkpointed, so a resumed epoch always
-        # restarts from its first batch. Rather than guess how far into that
-        # epoch we'd already gotten (unreliable if batch_size changed since the
-        # checkpoint was saved, since global_step was counted under the old
-        # steps_per_epoch), just skip straight to the next epoch on resume.
-        if self.global_step > 0:
-            self.epoch += 1
+        # local_step is the last batch index completed in self.epoch, so a resumed
+        # run continues that same epoch from the next batch instead of skipping it.
+        resume_step = self.local_step if self.global_step > 0 else -1
 
         if self.epoch >= num_epochs:
             self.logger.info(f"resume epoch {self.epoch} >= num_epochs {num_epochs}, nothing to train")
@@ -208,6 +174,8 @@ class Trainer:
         for _ in tqdm(range(self.epoch, num_epochs), total=num_epochs - self.epoch, leave=False):
             self.model.train()
             for step, batch in tqdm(enumerate(self.train_loader), total=len(self.train_loader), leave=True):
+                if step <= resume_step:
+                    continue
                 loss = self._train_step(batch)
                 self.global_step += 1
                 self.local_step = step
@@ -224,6 +192,7 @@ class Trainer:
                     self._evaluate_and_log()
 
             self.epoch += 1
+            resume_step = -1
 
     def _evaluate_and_log(self):
         eval_loss = self.eval()
@@ -236,7 +205,7 @@ class Trainer:
         target: (B, Tt, 3, H, W) -> (B, Tt, 1+N, D)."""
         B, Tt = target.shape[:2]
         flat = target.reshape(B * Tt, *target.shape[2:])
-        repr_ = self.ema_model(flat).last_hidden_state  # (B*Tt, 1+N, D)
+        repr_ = self.target_encoder(flat).last_hidden_state  # (B*Tt, 1+N, D)
         if self.config.normalize_target:
             repr_ = F.layer_norm(repr_, repr_.shape[-1:])
         return repr_.view(B, Tt, -1, repr_.shape[-1])
@@ -273,7 +242,6 @@ class Trainer:
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.scheduler.step()
-        self.ema_model.update_parameters(self.model.encoder)
         # print('loss.step()')
         return loss.item()
 

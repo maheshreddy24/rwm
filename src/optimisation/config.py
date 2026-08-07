@@ -18,10 +18,9 @@ class TrainerConfig:
     checkpoint_dir: str = "checkpoints"
     seed: Optional[int] = None
 
-    # optimizer -- AdamW, two param groups: the DINO vision encoder gets a much
-    # lower lr than the recurrent core / decoder, which are trained from scratch.
+    # optimizer -- AdamW over the recurrent core / decoder, which are trained
+    # from scratch. The DINO vision encoder is frozen and excluded.
     lr: float = 1.5e-4          # recurrent core + decoder + repr_head
-    encoder_lr: float = 1.5e-5  # DINO vision encoder (backbone)
     weight_decay: float = 0.05
     betas: Tuple[float, float] = (0.9, 0.95)
     eps: float = 1e-8
@@ -32,11 +31,9 @@ class TrainerConfig:
     warmup_ratio: float = 0.05
     min_lr_ratio: float = 0.01
 
-    # EMA teacher: exponential moving average of the vision encoder, used to
-    # produce the target representation for masked target patches.
-    momentum_decay: float = 0.999
-    momentum_warmup_steps: int = 2000
-    normalize_target: bool = True  # layernorm (no affine) the EMA representation
+    # target representation for masked target patches, produced by the frozen
+    # vision encoder.
+    normalize_target: bool = True  # layernorm (no affine) the target representation
 
     # cadence, in optimizer steps. During the first epoch eval runs every step;
     # after that it runs every 2 * eval_every_steps (see Trainer.train).
