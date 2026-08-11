@@ -27,4 +27,5 @@ datasets/kinetics_dataset
 datasets/ssv2
 *.log
 *.wandb
+wandb
 *.txt
