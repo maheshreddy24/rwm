@@ -3,6 +3,7 @@ import dataclasses
 import math
 import os
 import random
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -62,6 +63,12 @@ def get_logger(log_path):
         logger.addHandler(console_handler)
 
     return logger
+
+
+# per-epoch checkpoints are named "nf{num_frames}_epoch_{epoch}.pt" (see
+# Trainer.train); resuming parses this to know which ablation setting and
+# epoch to pick up from.
+CHECKPOINT_NAME_RE = re.compile(r"nf(?P<nf>\d+)_epoch_(?P<epoch>\d+)\.pt$")
 
 
 def _warmup_cosine(step: int, warmup_steps: int, total_steps: int, base_lr: float, min_lr: float) -> float:
@@ -158,9 +165,23 @@ class Trainer:
         self.num_frames = [16, 13, 10, 7, 4, 1]
         self.abl_iterations = len(self.num_frames)
 
-        self.checkpoint_dir = os.path.join(
-            self.config.checkpoint_dir, f"exp_{time.strftime('%Y%m%d_%H%M%S')}"
-        )
+        # resuming continues inside the same experiment dir as the checkpoint,
+        # instead of starting a fresh exp_<timestamp> dir
+        self.resume_path = resume
+        self.resume_nf = None
+        if resume is not None:
+            self.checkpoint_dir = os.path.dirname(os.path.abspath(resume))
+            match = CHECKPOINT_NAME_RE.search(os.path.basename(resume))
+            if not match:
+                raise ValueError(
+                    f"can't parse num_frames/epoch from checkpoint name: {resume} "
+                    f"(expected nf<N>_epoch_<E>.pt)"
+                )
+            self.resume_nf = int(match.group("nf"))
+        else:
+            self.checkpoint_dir = os.path.join(
+                self.config.checkpoint_dir, f"exp_{time.strftime('%Y%m%d_%H%M%S')}"
+            )
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         self.logger = get_logger(os.path.join(self.checkpoint_dir, "training.log"))
 
@@ -203,10 +224,6 @@ class Trainer:
         # setting since epochs and the train_loader are shared across them)
         self.plot_acc_data = [[] for _ in range(self.abl_iterations)]
         self.plot_step_data = [[] for _ in range(self.abl_iterations)]
-
-        if resume is not None:
-            self.load_checkpoint(resume)
-            self.epochs += 2
 
     def _extract_representation(self, frames: torch.Tensor, retain_idx: int) -> torch.Tensor:
         bs, t, c, h, w = frames.shape
@@ -278,11 +295,19 @@ class Trainer:
         return ckpt
 
     def train_loop(self):
+        # settings ordered before the resumed one are assumed already finished
+        # in a prior run (their own logs/checkpoints exist there already)
+        resume_idx = self.num_frames.index(self.resume_nf) if self.resume_nf is not None else None
+
         for idx, nf in enumerate(tqdm(self.num_frames, desc="frame ablation")):
+            if resume_idx is not None and idx < resume_idx:
+                self.logger.info(f"skipping num_frames = {nf} (already completed before resume)")
+                continue
+
             self.logger.info(f'')
             self.logger.info(f"New iteration")
             self.current_nf = nf
-            self.current_epoch = 0  # each ablation setting trains from scratch
+            self.current_epoch = 0
 
             self.model = Readout(
                 in_dim=self.config.readout_in_dim,
@@ -296,31 +321,38 @@ class Trainer:
             self.logger.info(f"num_frames = {nf}, iteration = {idx}, readout params = {n_params}")
 
             self.init_optim()
+
+            if idx == resume_idx:
+                self.load_checkpoint(self.resume_path)
+                self.logger.info(
+                    f"resumed num_frames = {nf} from {self.resume_path}, "
+                    f"starting at epoch {self.current_epoch}"
+                )
+
             self.train(idx)
             wandb.finish()
 
         self._save_ablation_results()
 
     def _save_ablation_results(self):
-        # 1) num_frames (x) vs final eval accuracy (y)
-        final_accs = [
+        # called after every eval point, so curves across settings are rarely
+        # the same length (in progress vs. finished vs. not-yet-started) --
+        # keep one array per num_frames setting instead of stacking them.
+
+        # 1) num_frames (x) vs latest eval accuracy (y)
+        latest_accs = [
             self.plot_acc_data[i][-1] if self.plot_acc_data[i] else float("nan")
             for i in range(self.abl_iterations)
         ]
-        frames_vs_acc = np.array(list(zip(self.num_frames, final_accs)))
+        frames_vs_acc = np.array(list(zip(self.num_frames, latest_accs)))
         np.save(os.path.join(self.checkpoint_dir, "frames_vs_acc.npy"), frames_vs_acc)
 
-        # 2) step (x) vs accuracy (y), one curve per num_frames setting
-        steps_vs_acc = np.array(
-            [self.plot_step_data[i] for i in range(self.abl_iterations)]
-        )
-        acc_curves = np.array(
-            [self.plot_acc_data[i] for i in range(self.abl_iterations)]
-        )
-        np.save(os.path.join(self.checkpoint_dir, "steps_vs_acc_steps.npy"), steps_vs_acc)
-        np.save(os.path.join(self.checkpoint_dir, "steps_vs_acc_values.npy"), acc_curves)
-
-        self.logger.info(f"saved ablation npy arrays to {self.checkpoint_dir}")
+        # 2) step (x) vs accuracy (y) curve per num_frames setting
+        curves = {}
+        for i, nf in enumerate(self.num_frames):
+            curves[f"nf{nf}_steps"] = np.array(self.plot_step_data[i])
+            curves[f"nf{nf}_acc"] = np.array(self.plot_acc_data[i])
+        np.savez(os.path.join(self.checkpoint_dir, "steps_vs_acc.npz"), **curves)
 
     def train(self, indx: int):
         self.model.train()
@@ -384,6 +416,7 @@ class Trainer:
                     _, acc = self.evaluate(retain_idx=self.num_frames[indx])
                     self.plot_acc_data[indx].append(acc)
                     self.plot_step_data[indx].append(global_step)
+                    self._save_ablation_results()
                     self.model.train()
 
             # Epoch statistics
