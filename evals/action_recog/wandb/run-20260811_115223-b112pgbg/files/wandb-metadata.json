@@ -1,0 +1,44 @@
+{
+  "os":  "Linux-6.8.0-100-generic-x86_64-with-glibc2.35",
+  "python":  "CPython 3.10.20",
+  "startedAt":  "2026-08-11T11:52:23.773062Z",
+  "args":  [
+    "--config",
+    "training_config.yaml"
+  ],
+  "program":  "/home/rvm/evals/action_recog/ablation_ssv2_num_frames.py",
+  "codePath":  "evals/action_recog/ablation_ssv2_num_frames.py",
+  "codePathLocal":  "ablation_ssv2_num_frames.py",
+  "git":  {
+    "remote":  "https://github.com/maheshreddy24/rvm.git",
+    "commit":  "8dbcf2730aacb151c86ee2e0c753547a8376103a"
+  },
+  "email":  "maheshreddy0299@gmail.com",
+  "root":  "/home/rvm/evals/action_recog",
+  "host":  "c27db0222452",
+  "executable":  "/root/miniconda3/envs/gssl/bin/python3",
+  "cpu_count":  32,
+  "cpu_count_logical":  64,
+  "gpu":  "NVIDIA A100-PCIE-40GB",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "53687091200",
+      "used":  "11152703488"
+    }
+  },
+  "memory":  {
+    "total":  "540682964992"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA A100-PCIE-40GB",
+      "memoryTotal":  "42949672960",
+      "cudaCores":  6912,
+      "architecture":  "Ampere",
+      "uuid":  "GPU-a8dad175-9bb7-715c-142e-9e0640bbaba2"
+    }
+  ],
+  "cudaVersion":  "13.0",
+  "writerId":  "c5e5q6xfwhwcx5u0qnmmx489qa8akr3b"
+}
