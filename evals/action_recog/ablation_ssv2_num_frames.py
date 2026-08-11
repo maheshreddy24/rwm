@@ -374,6 +374,9 @@ class Trainer:
 
         for epoch in tqdm(range(self.current_epoch, self.epochs), desc="Epochs", leave=True):
             self.current_epoch = epoch
+            # deterministic per (setting, epoch): same batch order whether
+            # this setting is trained continuously or resumed mid-way
+            self.train_loader.generator.manual_seed(self.config.seed + indx * 10_000 + epoch)
 
             running_loss = 0.0
             num_batches = 0
@@ -485,12 +488,16 @@ def build_dataloaders(config: TrainConfig):
     train_set = SSv2(config.dataset_config_path, split="train")
     eval_set = SSv2(config.dataset_config_path, split="validation")
 
+    # shuffle order is reseeded per (ablation setting, epoch) in Trainer.train,
+    # so it only depends on config.seed -- not on how much other RNG
+    # consumption happened before it (e.g. settings skipped on resume)
     train_loader = DataLoader(
         train_set,
         batch_size=config.batch_size,
         shuffle=True,
         num_workers=config.num_workers,
         drop_last=True,
+        generator=torch.Generator(),
     )
     eval_loader = DataLoader(
         eval_set,
