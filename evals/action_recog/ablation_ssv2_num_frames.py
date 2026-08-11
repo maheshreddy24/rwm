@@ -40,6 +40,19 @@ from ssv2_inf_dataset import SSv2
 
 import logging
 
+import random
+
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+set_seed(42)
+
 def get_logger(log_path):
     logger = logging.getLogger("training_logger")
     logger.setLevel(logging.INFO)
