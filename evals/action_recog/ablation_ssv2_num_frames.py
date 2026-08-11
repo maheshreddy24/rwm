@@ -279,6 +279,8 @@ class Trainer:
 
     def train_loop(self):
         for idx, nf in enumerate(tqdm(self.num_frames, desc="frame ablation")):
+            self.logger.info(f'')
+            self.logger.info(f"New iteration")
             self.current_nf = nf
             self.current_epoch = 0  # each ablation setting trains from scratch
 

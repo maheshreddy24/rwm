@@ -1,0 +1,116 @@
+_wandb:
+    value:
+        cli_version: 0.28.1
+        e:
+            j98g4j0wfac88by6gawbiekk4sxh682a:
+                args:
+                    - --config
+                    - training_config.yaml
+                codePath: evals/action_recog/ablation_ssv2_num_frames.py
+                codePathLocal: ablation_ssv2_num_frames.py
+                cpu_count: 32
+                cpu_count_logical: 64
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "53687091200"
+                        used: "11152703488"
+                email: maheshreddy0299@gmail.com
+                executable: /root/miniconda3/envs/gssl/bin/python3
+                git:
+                    commit: a0025b9e57cfe887971299df97f82ded064b0fe5
+                    remote: https://github.com/maheshreddy24/rvm.git
+                gpu: NVIDIA A100-PCIE-40GB
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "42949672960"
+                      name: NVIDIA A100-PCIE-40GB
+                      uuid: GPU-a8dad175-9bb7-715c-142e-9e0640bbaba2
+                host: c27db0222452
+                memory:
+                    total: "540682964992"
+                os: Linux-6.8.0-100-generic-x86_64-with-glibc2.35
+                program: /home/rvm/evals/action_recog/ablation_ssv2_num_frames.py
+                python: CPython 3.10.20
+                root: /home/rvm/evals/action_recog
+                startedAt: "2026-08-11T06:20:10.487881Z"
+                writerId: j98g4j0wfac88by6gawbiekk4sxh682a
+        m: []
+        python_version: 3.10.20
+        t:
+            "1":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 53
+            "2":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 53
+            "3":
+                - 13
+                - 16
+            "4": 3.10.20
+            "5": 0.28.1
+            "6": 5.15.0
+            "10":
+                - 20
+            "12": 0.28.1
+            "13": linux-x86_64
+amp:
+    value: true
+batch_size:
+    value: 32
+betas:
+    value:
+        - 0.9
+        - 0.999
+checkpoint_dir:
+    value: num_frames_ablation
+dataset_config_path:
+    value: /home/rvm/evals/action_recog/dataset_config.yaml
+device:
+    value: cuda:0
+eps:
+    value: 1e-08
+eval_interval:
+    value: 1000
+log_interval:
+    value: 200
+lr:
+    value: 0.0003
+min_lr:
+    value: 1e-07
+num_epochs:
+    value: 2
+num_workers:
+    value: 16
+readout_dim:
+    value: 768
+readout_in_dim:
+    value: 384
+readout_num_classes:
+    value: 174
+readout_num_heads:
+    value: 12
+restored_params_path:
+    value: /home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz
+rvm_weights_path:
+    value: ""
+seed:
+    value: 42
+wandb_name:
+    value: ssv2-readout-run1
+wandb_project:
+    value: rvm-action-recog
+warmup_ratio:
+    value: 0.05
+weight_decay:
+    value: 0.0001

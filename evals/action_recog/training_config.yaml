@@ -30,7 +30,7 @@ amp: true
 
 log_interval: 200
 eval_interval: 1000
-checkpoint_dir: "pretrained_rvm_cckpts"
+checkpoint_dir: "num_frames_ablation"
 
 wandb_project: "rvm-action-recog"
 wandb_name: "ssv2-readout-run1"
