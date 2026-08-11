@@ -13,3 +13,4 @@ einops
 tqdm
 transformers
 wandb
+polars

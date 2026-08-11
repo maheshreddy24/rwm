@@ -30,12 +30,12 @@ dataset:
     min_duration_sec: 4
 
 dataloader:
-  batch_size: 64
+  batch_size: 128
   num_workers: 16
   pin_memory: true
 
 trainer:
-  checkpoint_dir: checkpoints_ema_dino_backbone
+  checkpoint_dir: checkpoints_ema_dino_backbone_frozen
   lr: 1.5e-4          # recurrent core + decoder + repr_head
   weight_decay: 0.05
   betas: [0.9, 0.95]
