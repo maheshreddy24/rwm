@@ -36,7 +36,7 @@ dataloader:
   pin_memory: true
 
 trainer:
-  checkpoint_dir: checkpoints_ema_dino_backbone_frozen
+  checkpoint_dir: checkpoints_dino_backbone_frozen
   lr: 1.5e-4          # recurrent core + decoder + repr_head
   weight_decay: 0.05
   betas: [0.9, 0.95]

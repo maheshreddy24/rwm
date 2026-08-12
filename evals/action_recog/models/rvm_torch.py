@@ -272,6 +272,7 @@ class RVM(nn.Module):
             src = self._embed(source.reshape(B * Ts, *img))             # (B*Ts, 1+N, D)
             src = self._blocks(src)                                     # (B*Ts, 1+N, D)
         src = src.view(B, Ts, *src.shape[1:])                           # (B, Ts, 1+N, D)
+        dino_repr = src[..., 1:, :]
 
         if state is None:
             state = src.new_zeros(B, src.shape[2], self.d_enc)          # (B, 1+N, D)  s_0 = 0
@@ -341,6 +342,7 @@ class RVM(nn.Module):
             "state": state,                                             # (B, 1+N, D)      s_Ts
             "grid": grid,
             "decoded_representation": decoded_representation.view(B, Tt, N + 1, -1),  # (B, Tt, 1+N, D)
+            "dino_feat": dino_repr # bs, T, N, D
         }
 
 

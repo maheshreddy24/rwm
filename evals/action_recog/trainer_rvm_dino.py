@@ -210,7 +210,8 @@ class Trainer:
         with torch.no_grad(), torch.amp.autocast(device_type=self.device_type, enabled=self.config.amp):
             output = self.rd_encoder(source, target, deltas)
 
-        return output["memory"][..., 1:, :]  # (B, T, N, 384), CLS token dropped
+        # return output["memory"][..., 1:, :]  # (B, T, N, 384), CLS token dropped
+        return output['dino_feat'] # bs, t, n, c
 
 
     def init_optim(self):
