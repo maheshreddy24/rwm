@@ -8,8 +8,7 @@ model:
   dec_layers: 8
   dec_heads: 16
   dec_mlp: 2048
-  # mask_ratio: 0.95
-  mask_ratio: 1.0
+  mask_ratio: 0.95
   max_delta: 64
   freeze_encoder: false
   checkpoint_core: false
