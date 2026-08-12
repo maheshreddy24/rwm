@@ -31,7 +31,7 @@ amp: true
 log_interval: 200
 eval_interval: 1000
 # checkpoint_dir: "num_frames_ablation"
-checkpoint_dir: "ckpts/only_dino_feat"
+checkpoint_dir: "ckpts/num_frames_ablation"
 
 wandb_project: "rvm-action-recog"
 wandb_name: "ssv2-readout-run1"
