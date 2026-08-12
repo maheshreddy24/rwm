@@ -28,4 +28,6 @@ datasets/ssv2
 *.log
 *.wandb
 wandb
+
+local_tests.ipynb
 *.txt
