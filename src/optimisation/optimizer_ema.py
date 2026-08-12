@@ -114,9 +114,17 @@ class Trainer:
         self.logger.info("=== TrainerConfig ===")
         for k, v in asdict(self.config).items():
             self.logger.info(f"  {k}: {v}")
-        n_params = sum(p.numel() for p in self.model.parameters())
-        n_trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+
+        def count(module: nn.Module) -> tuple[int, int]:
+            total = sum(p.numel() for p in module.parameters())
+            trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
+            return total, trainable
+
+        n_params, n_trainable = count(self.model)
         self.logger.info(f"model params: {n_params:,} total, {n_trainable:,} trainable")
+        for name, module in self.model.named_children():
+            m_params, m_trainable = count(module)
+            self.logger.info(f"  {name}: {m_params:,} total, {m_trainable:,} trainable")
 
     def save_checkpoint(self):
         name = f"model_epoch{self.epoch}_step{self.global_step}.pth"
