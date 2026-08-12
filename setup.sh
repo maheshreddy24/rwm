@@ -32,7 +32,7 @@ echo "Environment '${ENV_NAME}' is ready."
 sudo apt install nvtop
 
 
-mkdir -p rvm_ckpts
-cd rvm_ckpts
+# mkdir -p rvm_ckpts
+# cd rvm_ckpts
 
-wget https://storage.googleapis.com/representations4d/checkpoints/pretrain_rvm_small16_256_204031069.npz
+# wget https://storage.googleapis.com/representations4d/checkpoints/pretrain_rvm_small16_256_204031069.npz
