@@ -2,7 +2,6 @@
 
 import contextlib
 import math
-from dataclasses import dataclass, replace
 from typing import Optional
 
 import torch
@@ -159,81 +158,69 @@ class GatedRecurrentCore(nn.Module):
         return out, out
 
 
-@dataclass
-class RVMConfig:
-    """Architecture hyperparameters for `RVM`. Pass an instance, or override fields
-    via kwargs to `RVM(...)` (e.g. from a training yaml's `model:` section).
-    """
-
-    encoder_name: str = "facebook/dinov2-small"    # HF id, e.g. dinov2-small (384-dim, patch 14)
-    core_layers: int = 4                # paper: 4 at every model scale (Table 5)
-    core_heads: int = 8                 # paper: 8 / 12 / 16 / 16 for S / B / L / H
-    core_mlp: Optional[int] = None      # paper: MLP ratio 4.0; None -> 4 * d_enc
-    dec_dim: int = 512                  # paper: decoder fixed across scales (Table 6)
-    # dec_layers: int = 8
-    dec_layers: int = 3 # changed
-    dec_heads: int = 16
-    # dec_mlp: int = 2048
-    dec_mlp: int = 768 # changed
-    mask_ratio: float = 0.95
-    max_delta: int = 64
-    freeze_encoder: bool = False
-    checkpoint_core: bool = False
-
-
 class RVM(nn.Module):
     """Recurrent video MAE with a DINOv2 encoder.
 
+    Architecture hyperparameters are plain kwargs (defaults below), overridden
+    by a training yaml's `model:` section via `RVM(**config["model"])`.
+
     Args:
-        config: architecture hyperparameters, see `RVMConfig`. Defaults to
-            `RVMConfig()` if omitted; any of its fields can also be overridden
-            directly as kwargs (`RVM(dec_layers=12)`), which is how the
-            training yaml's `model:` section wires in.
         encoder: pre-built backbone; skips the HF download. Must expose
             `.embeddings`, `.encoder`, `.layernorm`, `.config`.
+        encoder_name: HF id, e.g. dinov2-small (384-dim, patch 14).
+        core_layers: paper: 4 at every model scale (Table 5).
+        core_heads: paper: 8 / 12 / 16 / 16 for S / B / L / H.
+        core_mlp: paper: MLP ratio 4.0; None -> 4 * d_enc.
+        dec_dim: paper: decoder fixed across scales (Table 6).
     """
 
     def __init__(
         self,
-        config: Optional[RVMConfig] = None,
         encoder: Optional[nn.Module] = None,
-        **overrides,
+        encoder_name: str = "facebook/dinov2-small",
+        core_layers: int = 4,
+        core_heads: int = 8,
+        core_mlp: Optional[int] = None,
+        dec_dim: int = 512,
+        dec_layers: int = 3,
+        dec_heads: int = 16,
+        dec_mlp: int = 768,
+        mask_ratio: float = 0.95,
+        max_delta: int = 64,
+        freeze_encoder: bool = False,
+        checkpoint_core: bool = False,
     ):
         super().__init__()
-        config = replace(config or RVMConfig(), **overrides)
-        self.config = config
 
         if encoder is None:
             from transformers import AutoModel
-            encoder = AutoModel.from_pretrained(config.encoder_name)
+            encoder = AutoModel.from_pretrained(encoder_name)
         self.encoder = encoder
 
         self.d_enc = encoder.config.hidden_size
         self.patch = encoder.config.patch_size
-        self.dec_dim = config.dec_dim
-        self.mask_ratio = config.mask_ratio
-        self.freeze_encoder = config.freeze_encoder
-        self.checkpoint_core = config.checkpoint_core
+        self.dec_dim = dec_dim
+        self.mask_ratio = mask_ratio
+        self.freeze_encoder = freeze_encoder
+        self.checkpoint_core = checkpoint_core
 
-        if config.freeze_encoder:
+        if freeze_encoder:
             for p in self.encoder.parameters():
                 p.requires_grad_(False)
 
-        core_mlp = config.core_mlp or 4 * self.d_enc
-        self.core = GatedRecurrentCore(self.d_enc, config.core_heads, config.core_layers, core_mlp)
+        core_mlp = core_mlp or 4 * self.d_enc
+        self.core = GatedRecurrentCore(self.d_enc, core_heads, core_layers, core_mlp)
 
-        self.decoder_embed = nn.Linear(self.d_enc, config.dec_dim)
-        self.mask_token = nn.Parameter(torch.randn(1, 1, config.dec_dim) * 0.02)
+        self.decoder_embed = nn.Linear(self.d_enc, dec_dim)
+        self.mask_token = nn.Parameter(torch.randn(1, 1, dec_dim) * 0.02)
         # equivalent to Linear(one_hot(delta, 64)) in the JAX code, minus the bias
-        self.delta_embed = nn.Embedding(config.max_delta, config.dec_dim)
+        self.delta_embed = nn.Embedding(max_delta, dec_dim)
         nn.init.normal_(self.delta_embed.weight, std=0.02)
-        self.max_delta = config.max_delta
+        self.max_delta = max_delta
 
-        self.decoder = CrossAttentionTransformer(
-            config.dec_dim, config.dec_heads, config.dec_layers, config.dec_mlp
-        )
+        self.decoder = CrossAttentionTransformer(dec_dim, dec_heads, dec_layers, dec_mlp)
         # predicts into the (EMA) encoder's representation space, not pixel space
-        self.repr_head = nn.Linear(config.dec_dim, self.d_enc)
+        self.repr_head = nn.Linear(dec_dim, self.d_enc)
 
         self.register_buffer("_posenc", torch.zeros(0), persistent=False)
 

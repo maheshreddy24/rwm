@@ -5,9 +5,9 @@ model:
   core_layers: 4
   core_heads: 8
   dec_dim: 512
-  dec_layers: 8
+  dec_layers: 3
   dec_heads: 16
-  dec_mlp: 2048
+  dec_mlp: 768
   mask_ratio: 0.95
   max_delta: 64
   freeze_encoder: false
