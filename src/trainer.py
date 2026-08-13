@@ -48,6 +48,8 @@ def build_dataloader(dataset_config, dataloader_config, shuffle: bool):
         pin_memory=dataloader_config.get("pin_memory", True),
         drop_last=shuffle,
         collate_fn=RVMDataset.collate_fn,
+        persistent_workers=True
+
     )
 
 
