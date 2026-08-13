@@ -200,7 +200,29 @@ class Trainer:
             self.epoch += 1
             resume_step = -1
 
+    def _grad_norm(self, module: nn.Module) -> float:
+        """L2 norm of the gradients currently held on `module`'s parameters.
+        Called from _evaluate_and_log, before the next zero_grad(), so this
+        reflects the gradients from the most recent training step."""
+        total_sq = 0.0
+        for p in module.parameters():
+            if p.grad is not None:
+                total_sq += p.grad.data.float().norm(2).item() ** 2
+        return total_sq ** 0.5
+
+    def _log_gradient_norms(self):
+        core_norm = self._grad_norm(self.model.core)
+        decoder_norm = self._grad_norm(self.model.decoder)
+        self.logger.info(
+            f"epoch {self.epoch} step {self.global_step} grad_norm/core {core_norm:.4f} grad_norm/decoder {decoder_norm:.4f}"
+        )
+        wandb.log(
+            {"grad_norm/core": core_norm, "grad_norm/decoder": decoder_norm, "epoch": self.epoch},
+            step=self.global_step,
+        )
+
     def _evaluate_and_log(self):
+        self._log_gradient_norms()
         eval_loss = self.eval()
         self.logger.info(f"epoch {self.epoch} step {self.global_step} eval_loss {eval_loss:.4f}")
         wandb.log({"eval/loss": eval_loss, "epoch": self.epoch}, step=self.global_step)

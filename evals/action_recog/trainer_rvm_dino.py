@@ -29,8 +29,18 @@ from icecream import ic
 from tqdm import tqdm
 
 from models.readout_head import Readout
-from models.rvm_torch import RVM # I guess all the parameters are hardcodeed.
+from models.rvm_torch import RVM
 from ssv2_inf_dataset import SSv2
+
+RVM_CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "configs", "train_ema.yaml"
+)
+
+
+def load_rvm_model_config(path: str = RVM_CONFIG_PATH) -> dict:
+    with open(path, "r") as f:
+        raw = yaml.safe_load(f)
+    return raw["model"]
 
 #! params from the 4D scaling paper (Carreira et al.), optimization fixed across all tasks/models:
 #! 1.28M training examples, batch size 32 -> 40k steps, AdamW, wd 1e-4,
@@ -161,7 +171,7 @@ class Trainer:
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         self.logger = get_logger(os.path.join(self.checkpoint_dir, "training.log"))
 
-        self.rd_encoder = RVM(encoder_name="facebook/dinov2-small")
+        self.rd_encoder = RVM(**load_rvm_model_config())
         if self.config.rvm_weights_path:
             state_dict = torch.load(self.config.rvm_weights_path, map_location="cpu")
             self.rd_encoder.load_state_dict(state_dict['model'])

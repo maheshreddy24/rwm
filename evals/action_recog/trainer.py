@@ -225,11 +225,12 @@ class Trainer:
         self.scheduler = None
         self.scaler = torch.amp.GradScaler(enabled=self.config.amp and self.device_type == "cuda")
         self.current_epoch = 0
+        self.global_step = 0
+        self.local_step = -1
         self.init_optim()
 
         if resume is not None:
             self.load_checkpoint(resume)
-            self.epochs += 2
 
     def _extract_representation(self, frames_np: np.ndarray) -> torch.Tensor:
         """frames_np: (B, T, C, H, W) clip -> (B, T, N, 384) frozen backbone features."""
@@ -273,14 +274,16 @@ class Trainer:
             config=dataclasses.asdict(self.config),
         )
 
-    def save_checkpoint(self, epoch: int, name: str = "last.pt"):
+    def save_checkpoint(self, name: str = "last.pt"):
         path = os.path.join(self.checkpoint_dir, name)
         torch.save(
             {
                 "model": self.model.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
                 "scheduler": self.scheduler.state_dict(),
-                "epoch": epoch,
+                "epoch": self.current_epoch,
+                "global_step": self.global_step,
+                "local_step": self.local_step,
                 "config": dataclasses.asdict(self.config),
             },
             path,
@@ -294,14 +297,15 @@ class Trainer:
             self.optimizer.load_state_dict(ckpt["optimizer"])
         if ckpt.get("scheduler") is not None:
             self.scheduler.load_state_dict(ckpt["scheduler"])
-        # resume from the epoch after the one that was saved
+        # checkpoints here are only ever saved once an epoch fully completes,
+        # so resume from the epoch after the one that was saved
         self.current_epoch = ckpt.get("epoch", -1) + 1
+        self.global_step = ckpt.get("global_step", 0)
+        self.local_step = ckpt.get("local_step", -1)
         return ckpt
 
     def train(self):
         self.model.train()
-
-        global_step = self.current_epoch * len(self.train_loader)
 
         for epoch in tqdm(range(self.current_epoch, self.epochs), desc="Epochs", leave=True):
             self.current_epoch = epoch
@@ -335,27 +339,28 @@ class Trainer:
 
                 running_loss += loss.item()
                 num_batches += 1
-                global_step += 1
+                self.global_step += 1
+                self.local_step = step
 
                 # Step-based logging
-                if global_step % self.config.log_interval == 0:
+                if self.global_step % self.config.log_interval == 0:
                     wandb.log(
                         {
                             "train/loss_step": loss.item(),
                             "train/lr": self.scheduler.get_last_lr()[0],
                             "epoch": epoch,
                         },
-                        step=global_step,
+                        step=self.global_step,
                     )
                     self.logger.info(
-                        f"[epoch {epoch} step {global_step}] "
+                        f"[epoch {epoch} step {self.global_step}] "
                         f"loss {loss.item():.4f}"
                     )
 
                 # Step-based evaluation
                 if (
                     self.eval_loader is not None
-                    and global_step % self.config.eval_interval == 0
+                    and self.global_step % self.config.eval_interval == 0
                 ):
                     self.evaluate()
                     self.model.train()
@@ -368,17 +373,17 @@ class Trainer:
                     "train/epoch_loss": epoch_loss,
                     "epoch": epoch,
                 },
-                step=global_step,
+                step=self.global_step,
             )
 
             self.logger.info(f"[epoch {epoch}] average train loss: {epoch_loss:.4f}")
 
             # Save checkpoint every epoch
-            self.save_checkpoint(epoch=epoch, name=f"epoch_{epoch}.pt")
+            self.save_checkpoint(name=f"epoch_{epoch}.pt")
             self.evaluate()
 
 
-        self.save_checkpoint(epoch=self.epochs - 1, name="final.pt")
+        self.save_checkpoint(name="final.pt")
     @torch.no_grad()
     def evaluate(self):
         self.model.eval()
