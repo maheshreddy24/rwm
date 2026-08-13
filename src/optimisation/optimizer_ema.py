@@ -239,7 +239,6 @@ class Trainer:
                 teacher[..., 1:, :],
                 out["mask"],
             )
-            # print(f"loss computed {loss.item()}")
 
         self.scaler.scale(loss).backward()
         if self.config["grad_clip_norm"] is not None:
@@ -248,7 +247,6 @@ class Trainer:
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.scheduler.step()
-        # print('loss.step()')
         return loss.item()
 
     @torch.no_grad()
@@ -256,7 +254,6 @@ class Trainer:
         self.model.eval()
         total_loss, n_batches = 0.0, 0
         for batch in tqdm(self.eval_loader, total = len(self.eval_loader), leave = True):
-            # print("inside the eval function")
             source, target, target_deltas = _unpack_batch(batch)
             source = source.to(self.device, non_blocking=True)
             target = target.to(self.device, non_blocking=True)
