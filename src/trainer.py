@@ -16,7 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     
 from src.datasets.rvm_dataset import RVMDataset
 from src.models.rvm import RVM
-from src.optimisation.config import TrainerConfig
 from src.optimisation.optimizer_ema import Trainer
 import torch
 import random
@@ -33,8 +32,11 @@ def set_seed(seed: int):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-set_seed(42)
 
+def _worker_init_fn(worker_id):
+    # Each of the 16 worker processes otherwise runs cv2 with its own
+    # full-core thread pool, oversubscribing the CPU 16x and starving the GPU.
+    cv2.setNumThreads(1)
 
 
 def _worker_init_fn(worker_id):
@@ -80,14 +82,14 @@ def main():
         config = yaml.safe_load(f)
 
     if config.get("seed") is not None:
+        print("config is set")
         set_seed(config["seed"])
 
     train_loader = build_dataloader(config["dataset"]["train"], config["dataloader"], shuffle=True)
     eval_loader = build_dataloader(config["dataset"].get("eval"), config["dataloader"], shuffle=False)
 
     model = RVM(**config.get("model", {}))
-    trainer_config = TrainerConfig(**config.get("trainer", {}))
-    trainer = Trainer(model, train_loader, eval_loader, trainer_config)
+    trainer = Trainer(model, train_loader, eval_loader, config["trainer"])
 
     if args.resume is not None:
         ckpt_path = None if args.resume == "__latest__" else args.resume

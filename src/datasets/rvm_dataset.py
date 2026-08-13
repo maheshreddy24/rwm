@@ -33,7 +33,6 @@ class RVMDataset(Dataset):
     """
 
     def __init__(self, config):
-        self.config = config
         self.video_csv = config["video_csv"]
         self.num_source_frames = config["num_source_frames"]
         self.num_target_frames = config["num_target_frames"]
@@ -76,7 +75,7 @@ class RVMDataset(Dataset):
         last_src_idx = int(self.rng.integers(Ts - 1, high))
         source_idx = np.arange(last_src_idx - Ts + 1, last_src_idx + 1, dtype=np.int64)
 
-        deltas = self.rng.integers(4, self.max_delta + 1, size=Tt).astype(np.int64)
+        deltas = self.rng.integers(self.min_delta, self.max_delta + 1, size=Tt).astype(np.int64)
         target_idx = (last_src_idx + deltas).astype(np.int64)
 
         return source_idx, target_idx, deltas
@@ -171,24 +170,6 @@ class RVMDataset(Dataset):
         source = frames[:Ts]
         target = frames[Ts:]
         return source, target, torch.from_numpy(deltas)
-
-    # def __getitem__(self, index):
-    #     # Try up to 20 times to find a valid sample.
-    #     for _ in range(20):
-    #         video_path = self.data_paths[index]
-    #         sample = self._load_frames(video_path)
-
-    #         if sample is not None:
-    #             source, target, target_deltas = sample
-    #             return {
-    #                 "source": source,
-    #                 "target": target,
-    #                 "target_deltas": target_deltas,
-    #             }
-
-    #         index = int(self.rng.integers(len(self)))
-
-    #     # raise RuntimeError("Could not load a valid video after 20 attempts.")
 
     def __getitem__(self, index):
         # Try up to 20 times to find a valid sample.

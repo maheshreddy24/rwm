@@ -3,7 +3,6 @@ import logging
 import math
 import os
 import time
-from dataclasses import asdict
 from typing import Optional
 
 import torch
@@ -12,7 +11,6 @@ import torch.nn.functional as F
 import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from .config import TrainerConfig
 
 
 def get_logger(log_path: str) -> logging.Logger:
@@ -58,11 +56,11 @@ class Trainer:
         self,
         model: nn.Module,
         train_loader: DataLoader,
-        eval_loader: Optional[DataLoader] = None,
-        config: Optional[TrainerConfig] = None,
+        eval_loader: Optional[DataLoader],
+        config: dict,
     ):
-        self.config = config or TrainerConfig()
-        self.device = self.config.device
+        self.config = config
+        self.device = self.config.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
 
         self.target_encoder = model.encoder  # frozen; shared weights, no separate EMA copy
@@ -71,13 +69,13 @@ class Trainer:
 
         self.train_loader = train_loader
         self.eval_loader = eval_loader
-        self.checkpoint_dir = os.path.join(self.config.checkpoint_dir, f"exp_{time.time()}")
+        self.checkpoint_dir = os.path.join(self.config["checkpoint_dir"], f"exp_{time.time()}")
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         self.logger = get_logger(os.path.join(self.checkpoint_dir, "train.log"))
 
         self.optimizer = None
         self.scheduler = None
-        self.scaler = torch.amp.GradScaler(enabled=self.config.amp and self.device == "cuda")
+        self.scaler = torch.amp.GradScaler(enabled=self.config["amp"] and self.device == "cuda")
         self.epoch = 0
         self.global_step = 0
         self.local_step =  0
@@ -87,32 +85,32 @@ class Trainer:
         other_params = [p for n, p in self.model.named_parameters() if not n.startswith("encoder.")]
         self.optimizer = torch.optim.AdamW(
             [
-                {"params": other_params, "lr": float(self.config.lr)},
+                {"params": other_params, "lr": float(self.config["lr"])},
             ],
-            weight_decay=float(self.config.weight_decay),
-            betas=tuple(float(b) for b in self.config.betas),
-            eps=float(self.config.eps),
+            weight_decay=float(self.config["weight_decay"]),
+            betas=tuple(float(b) for b in self.config["betas"]),
+            eps=float(self.config["eps"]),
         )
 
         steps_per_epoch = len(self.train_loader)
-        total_steps = steps_per_epoch * int(self.config.num_epochs)
-        warmup_steps = int(round(total_steps * float(self.config.warmup_ratio)))
+        total_steps = steps_per_epoch * int(self.config["num_epochs"])
+        warmup_steps = int(round(total_steps * float(self.config["warmup_ratio"])))
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer,
             lr_lambda=lambda step: _warmup_cosine_factor(
-                step, warmup_steps, total_steps, float(self.config.min_lr_ratio)
+                step, warmup_steps, total_steps, float(self.config["min_lr_ratio"])
             ),
         )
 
         wandb.init(
-            project=self.config.wandb_project,
-            name=self.config.wandb_name,
-            config=asdict(self.config),
+            project=self.config["wandb_project"],
+            name=self.config["wandb_name"],
+            config=self.config,
         )
 
     def _log_params(self):
-        self.logger.info("=== TrainerConfig ===")
-        for k, v in asdict(self.config).items():
+        self.logger.info("=== trainer config ===")
+        for k, v in self.config.items():
             self.logger.info(f"  {k}: {v}")
 
         def count(module: nn.Module) -> tuple[int, int]:
@@ -136,7 +134,7 @@ class Trainer:
                 "scheduler": self.scheduler.state_dict() if self.scheduler else None,
                 "epoch": self.epoch,
                 "global_step": self.global_step,
-                "config": asdict(self.config),
+                "config": self.config,
                 "local_step": self.local_step,
             },
             path,
@@ -168,7 +166,7 @@ class Trainer:
         return True
 
     def train(self, num_epochs: Optional[int] = None):
-        num_epochs = num_epochs or int(self.config.num_epochs)
+        num_epochs = num_epochs or int(self.config["num_epochs"])
         self._log_params()
 
         # local_step is the last batch index completed in self.epoch, so a resumed
@@ -188,15 +186,15 @@ class Trainer:
                 self.global_step += 1
                 self.local_step = step
 
-                if self.global_step % int(self.config.log_interval) == 0:
+                if self.global_step % int(self.config["log_interval"]) == 0:
                     lr = self.optimizer.param_groups[-1]["lr"]
                     self.logger.info(f"epoch {self.epoch} step {self.global_step} loss {loss:.4f} lr {lr:.2e}")
                     wandb.log({"train/loss": loss, "train/lr": lr, "epoch": self.epoch}, step=self.global_step)
 
-                if self.global_step % int(self.config.save_every_steps) == 0:
+                if self.global_step % int(self.config["save_every_steps"]) == 0:
                     self.save_checkpoint()
 
-                if self.eval_loader is not None and self.global_step % int(self.config.eval_every_steps) == 0:
+                if self.eval_loader is not None and self.global_step % int(self.config["eval_every_steps"]) == 0:
                     self._evaluate_and_log()
 
             self.epoch += 1
@@ -214,7 +212,7 @@ class Trainer:
         B, Tt = target.shape[:2]
         flat = target.reshape(B * Tt, *target.shape[2:])
         repr_ = self.target_encoder(flat).last_hidden_state  # (B*Tt, 1+N, D)
-        if self.config.normalize_target:
+        if self.config["normalize_target"]:
             repr_ = F.layer_norm(repr_, repr_.shape[-1:])
         return repr_.view(B, Tt, -1, repr_.shape[-1])
 
@@ -232,7 +230,7 @@ class Trainer:
         target_deltas = target_deltas.to(self.device, non_blocking=True)
 
         self.optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(device_type=self.device, enabled=self.config.amp):
+        with torch.autocast(device_type=self.device, enabled=self.config["amp"]):
             out = self.model(source, target, target_deltas)
             with torch.no_grad():
                 teacher = self._teacher_representation(target)
@@ -244,9 +242,9 @@ class Trainer:
             # print(f"loss computed {loss.item()}")
 
         self.scaler.scale(loss).backward()
-        if self.config.grad_clip_norm is not None:
+        if self.config["grad_clip_norm"] is not None:
             self.scaler.unscale_(self.optimizer)
-            nn.utils.clip_grad_norm_(self.model.parameters(), float(self.config.grad_clip_norm))
+            nn.utils.clip_grad_norm_(self.model.parameters(), float(self.config["grad_clip_norm"]))
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.scheduler.step()
