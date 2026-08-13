@@ -38,6 +38,7 @@ class RVMDataset(Dataset):
         self.num_source_frames = config["num_source_frames"]
         self.num_target_frames = config["num_target_frames"]
         self.max_delta = config.get("max_delta", 48)
+        self.min_delta = config.get("min_delta", 20)
         self.frame_size = tuple(config.get("frame_size", FRAME_SIZE))
 
         self.rng = np.random.default_rng()
