@@ -31,8 +31,9 @@ dataset:
 
 dataloader:
   batch_size: 80
-  num_workers: 16
+  num_workers: 15
   pin_memory: true
+  prefetch_factor: 4
 
 trainer:
   checkpoint_dir: checkpoints/checkpoints_small_dec

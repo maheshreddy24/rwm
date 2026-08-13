@@ -8,6 +8,7 @@ import argparse
 import sys
 from pathlib import Path
 
+import cv2
 import yaml
 from torch.utils.data import DataLoader
 
@@ -36,20 +37,28 @@ set_seed(42)
 
 
 
+def _worker_init_fn(worker_id):
+    # Each of the 16 worker processes otherwise runs cv2 with its own
+    # full-core thread pool, oversubscribing the CPU 16x and starving the GPU.
+    cv2.setNumThreads(1)
+
+
 def build_dataloader(dataset_config, dataloader_config, shuffle: bool):
     if dataset_config is None:
         return None
     dataset = RVMDataset(dataset_config)
+    num_workers = dataloader_config.get("num_workers", 4)
     return DataLoader(
         dataset,
         batch_size=dataloader_config.get("batch_size", 8),
         shuffle=shuffle,
-        num_workers=dataloader_config.get("num_workers", 4),
+        num_workers=num_workers,
         pin_memory=dataloader_config.get("pin_memory", True),
         drop_last=shuffle,
         collate_fn=RVMDataset.collate_fn,
-        persistent_workers=True
-
+        persistent_workers=num_workers > 0,
+        prefetch_factor=dataloader_config.get("prefetch_factor", 4) if num_workers > 0 else None,
+        worker_init_fn=_worker_init_fn if num_workers > 0 else None,
     )
 
 

@@ -227,9 +227,9 @@ class Trainer:
 
     def _train_step(self, batch):
         source, target, target_deltas = _unpack_batch(batch)
-        source = source.to(self.device)   # (B, Ts, C, H, W)
-        target = target.to(self.device)   # (B, Tt, C, H, W)
-        target_deltas = target_deltas.to(self.device)
+        source = source.to(self.device, non_blocking=True)   # (B, Ts, C, H, W)
+        target = target.to(self.device, non_blocking=True)   # (B, Tt, C, H, W)
+        target_deltas = target_deltas.to(self.device, non_blocking=True)
 
         self.optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=self.device, enabled=self.config.amp):
@@ -260,9 +260,9 @@ class Trainer:
         for batch in tqdm(self.eval_loader, total = len(self.eval_loader), leave = True):
             # print("inside the eval function")
             source, target, target_deltas = _unpack_batch(batch)
-            source = source.to(self.device)
-            target = target.to(self.device)
-            target_deltas = target_deltas.to(self.device)
+            source = source.to(self.device, non_blocking=True)
+            target = target.to(self.device, non_blocking=True)
+            target_deltas = target_deltas.to(self.device, non_blocking=True)
 
             out = self.model(source, target, target_deltas)
             teacher = self._teacher_representation(target)
