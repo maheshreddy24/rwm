@@ -1,7 +1,7 @@
-"""SSv2 action-recognition ablation: RVM (torch) frozen backbone + MeanPoolProbe readout.
+"""SSv2 action-recognition ablation: RVM (jax VideoSiamMAE) frozen backbone + MeanPoolProbe readout.
 
 Usage:
-    python ablations/ssv2_probe/trainer_torch.py --config ablations/ssv2_probe/config_torch.yaml
+    python ablations/ssv2_probe/trainer_jax.py --config ablations/ssv2_probe/config_jax.yaml
 """
 
 import argparse
@@ -15,17 +15,59 @@ from typing import Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import numpy as np
+# torch and everything that dlopens LLVM must load before jax: libtriton.so and
+# jaxlib each bundle their own, and whichever loads second binds the wrong
+# symbols and segfaults. `import torch` alone is NOT enough -- torch._dynamo and
+# triton load lazily, and get dragged in later by torchvision (via
+# ssv2_inf_dataset), i.e. after jax. So force them now.
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader
+import torchvision  # noqa: F401  -- pulls torch._dynamo -> triton
+import torch._dynamo  # noqa: F401  -- belt and braces
+
+import jax
+import jax.numpy as jnp
+import numpy as np
 import wandb
 import yaml
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from common import MeanPoolProbe, get_logger, warmup_cosine_factor
-from rvm import RVM
+from rvm_jax import build_model
 from ssv2_inf_dataset import SSv2
+
+
+def recover_tree(flat_dict):
+    """Un-flatten a `{'a/b/c': array}` dict (as saved in the restored npz) into the
+    nested dict pytree flax expects for `apply({'params': ...})`."""
+    tree = {}
+    for k, v in flat_dict.items():
+        parts = k.split("/")
+        node = tree
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = v
+    return tree
+
+
+def _build_forward_fn(rvm_model):
+    """Jitted, pure wrapper around the frozen RVM's `reconstruct` method.
+
+    `rvm_model` is closed over (a flax Module is a frozen dataclass, not a jit
+    argument), so the only traced inputs are params/source/target/deltas/rng.
+    """
+
+    def _forward(params, source, target, deltas, rng):
+        out = rvm_model.apply(
+            {"params": params},
+            source, target, deltas,
+            method=rvm_model.reconstruct,
+            rngs={"default": rng},
+        )
+        return out["features"][..., 1:, :].astype(jnp.float32)  # drop CLS token: (B, Ts, N, F)
+
+    return jax.jit(_forward)
 
 
 @dataclass
@@ -34,7 +76,7 @@ class TrainConfig:
     device: str = "cuda:0"
 
     dataset_config_path: str = ""
-    rvm_weights_path: str = ""
+    restored_params_path: str = ""
 
     lr: float = 3e-4
     weight_decay: float = 1e-4
@@ -51,15 +93,15 @@ class TrainConfig:
 
     log_interval: int = 200
     eval_interval: int = 1000
-    checkpoint_dir: str = "ckpts/ssv2_meanpool_probe_torch"
+    checkpoint_dir: str = "ckpts/ssv2_meanpool_probe_jax"
 
     wandb_project: str = "rvm-action-recog"
-    wandb_name: str = "ssv2-meanpool-probe-torch"
+    wandb_name: str = "ssv2-meanpool-probe-jax"
 
     num_classes: int = 174
+    feature_dim: int = 384
 
     def __post_init__(self):
-        # PyYAML parses bare exponent floats (e.g. "3e-4") as strings, not floats.
         self.lr = float(self.lr)
         self.weight_decay = float(self.weight_decay)
         self.betas = tuple(float(b) for b in self.betas)
@@ -73,17 +115,17 @@ class TrainConfig:
         self.eval_interval = int(self.eval_interval)
         self.seed = int(self.seed)
         self.num_classes = int(self.num_classes)
+        self.feature_dim = int(self.feature_dim)
 
 
-def load_config(path: str):
+def load_config(path: str) -> TrainConfig:
     with open(path, "r") as f:
         raw = yaml.safe_load(f)
-    model_cfg = raw.pop("model", {})
     known = {f.name for f in dataclasses.fields(TrainConfig)}
     unknown = set(raw) - known
     if unknown:
         raise ValueError(f"Unknown key(s) in {path}: {sorted(unknown)}")
-    return TrainConfig(**raw), model_cfg
+    return TrainConfig(**raw)
 
 
 class Trainer:
@@ -92,7 +134,6 @@ class Trainer:
         train_loader: DataLoader,
         eval_loader: Optional[DataLoader],
         config: TrainConfig,
-        model_config: dict,
         resume: str = None,
     ):
         self.config = config
@@ -107,17 +148,15 @@ class Trainer:
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         self.logger = get_logger(os.path.join(self.checkpoint_dir, "training.log"))
 
-        self.backbone = RVM(**model_config)
-        if config.rvm_weights_path:
-            ckpt = torch.load(config.rvm_weights_path, map_location="cpu")
-            self.backbone.load_state_dict(ckpt["model"])
-            self.logger.info(f"loaded RVM weights from {config.rvm_weights_path}")
-        for p in self.backbone.parameters():
-            p.requires_grad_(False)
-        self.backbone = self.backbone.to(self.device).eval()
-        self.logger.info(f"backbone params: {sum(p.numel() for p in self.backbone.parameters()):,}")
+        self.rng_key = jax.random.PRNGKey(config.seed)
+        self.backbone = build_model()
+        restored = recover_tree(np.load(config.restored_params_path, allow_pickle=False))
+        self.backbone_params = jax.tree_util.tree_map(jnp.asarray, restored)
+        self._forward_fn = _build_forward_fn(self.backbone)
+        count = sum(np.prod(v.shape) for v in jax.tree_util.tree_leaves(self.backbone_params))
+        self.logger.info(f"backbone params: {count:,}")
 
-        self.model = MeanPoolProbe(dim=self.backbone.d_enc, num_classes=config.num_classes).to(self.device)
+        self.model = MeanPoolProbe(dim=config.feature_dim, num_classes=config.num_classes).to(self.device)
         self.logger.info(f"probe params: {sum(p.numel() for p in self.model.parameters()):,}")
 
         self.criterion = nn.CrossEntropyLoss()
@@ -131,15 +170,17 @@ class Trainer:
         if resume is not None:
             self.load_checkpoint(resume)
 
-    @torch.no_grad()
-    def _extract_features(self, frames: torch.Tensor) -> torch.Tensor:
-        """frames: (B, T, C, H, W) -> (B, T, N, D) frozen backbone features, CLS dropped."""
-        source = frames.to(self.device, non_blocking=True)
-        target = source[:, -1:]
-        deltas = torch.zeros((source.shape[0], 1), dtype=torch.int64, device=self.device)
-        with torch.amp.autocast(device_type=self.device_type, enabled=self.config.amp):
-            out = self.backbone(source, target, deltas)
-        return out["memory"][..., 1:, :]
+    def _extract_features(self, frames_np: np.ndarray) -> torch.Tensor:
+        """frames_np: (B, T, C, H, W) -> (B, T, N, F) frozen backbone features, CLS dropped."""
+        frames_np = np.transpose(frames_np, (0, 1, 3, 4, 2))  # (B, T, H, W, C), channels-last for jax
+        B = frames_np.shape[0]
+        source = frames_np
+        target = frames_np[:, -1:]
+        deltas = np.zeros((B, 1), dtype=np.int32)
+
+        self.rng_key, step_key = jax.random.split(self.rng_key)
+        features = self._forward_fn(self.backbone_params, source, target, deltas, step_key)
+        return torch.from_numpy(np.asarray(features))
 
     def init_optim(self):
         self.optimizer = torch.optim.AdamW(
@@ -196,7 +237,7 @@ class Trainer:
             running_loss, num_batches = 0.0, 0
 
             for frames, labels in tqdm(self.train_loader, desc=f"Epoch {epoch}", leave=False):
-                features = self._extract_features(frames)
+                features = self._extract_features(frames.detach().cpu().numpy()).to(self.device)
                 labels = labels.to(self.device)
 
                 with torch.amp.autocast(device_type=self.device_type, enabled=self.config.amp):
@@ -237,7 +278,7 @@ class Trainer:
         total_loss, total_correct, total_samples = 0.0, 0, 0
 
         for frames, labels in tqdm(self.eval_loader, desc="Eval", leave=False):
-            features = self._extract_features(frames)
+            features = self._extract_features(frames.detach().cpu().numpy()).to(self.device)
             labels = labels.to(self.device)
 
             with torch.amp.autocast(device_type=self.device_type, enabled=self.config.amp):
@@ -274,19 +315,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config",
-        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_torch.yaml"),
+        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_jax.yaml"),
     )
     parser.add_argument("--resume_path", type=str, default=None)
     args = parser.parse_args()
 
-    config, model_config = load_config(args.config)
+    config = load_config(args.config)
 
     random.seed(config.seed)
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
 
     train_loader, eval_loader = build_dataloaders(config)
-    trainer = Trainer(train_loader, eval_loader, config, model_config, args.resume_path)
+    trainer = Trainer(train_loader, eval_loader, config, args.resume_path)
     trainer.train()
 
 

@@ -1,0 +1,30 @@
+seed: 42
+device: cuda:0
+
+dataset_config_path: /home/rvm/evals/action_recog/dataset_config.yaml
+# pretrained VideoSiamMAE (jax, flattened npz) checkpoint -- paste your path here
+restored_params_path: /home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz
+
+lr: 3.0e-4
+weight_decay: 1.0e-4
+betas: [0.9, 0.999]
+eps: 1.0e-8
+
+num_epochs: 2
+warmup_ratio: 0.05
+min_lr: 1.0e-7
+
+batch_size: 32
+num_workers: 16
+amp: true
+
+log_interval: 200
+eval_interval: 1000
+checkpoint_dir: ckpts/ssv2_meanpool_probe_jax
+
+wandb_project: rvm-action-recog
+wandb_name: ssv2-meanpool-probe-jax
+
+num_classes: 174
+# backbone feature width -- fixed by build_model()'s hard-coded 'S' variant (see rvm_jax.py)
+feature_dim: 384
