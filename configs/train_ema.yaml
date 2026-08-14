@@ -8,7 +8,8 @@ model:
   dec_layers: 3
   dec_heads: 16
   dec_mlp: 768
-  mask_ratio: 0.95
+  # mask_ratio: 0.95
+  mask_ratio: 1
   max_delta: 64
   freeze_encoder: True
   checkpoint_core: false
@@ -36,7 +37,7 @@ dataloader:
   prefetch_factor: 4
 
 trainer:
-  checkpoint_dir: checkpoints/checkpoints_small_dec
+  checkpoint_dir: checkpoints/checkpoints_small_dec_masked
   lr: 1.5e-4          # recurrent core + decoder + repr_head
   weight_decay: 0.05
   betas: [0.9, 0.95]

@@ -61,7 +61,9 @@ class Trainer:
     ):
         self.config = config
         self.device = self.config.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
+
         self.model = model.to(self.device)
+        print(f"Device used is {self.device} ===========================")
 
         self.target_encoder = model.encoder  # frozen; shared weights, no separate EMA copy
         for p in self.target_encoder.parameters():
@@ -172,10 +174,11 @@ class Trainer:
         # local_step is the last batch index completed in self.epoch, so a resumed
         # run continues that same epoch from the next batch instead of skipping it.
         resume_step = self.local_step if self.global_step > 0 else -1
-
+        print(f"Will resume from {resume_step}")
         if self.epoch >= num_epochs:
             self.logger.info(f"resume epoch {self.epoch} >= num_epochs {num_epochs}, nothing to train")
             return
+        
 
         for _ in tqdm(range(self.epoch, num_epochs), total=num_epochs - self.epoch, leave=False):
             self.model.train()
