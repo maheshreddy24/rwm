@@ -32,10 +32,11 @@ from models.readout_head import Readout
 from models.rvm_torch import RVM
 from ssv2_inf_dataset import SSv2
 
-RVM_CONFIG_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "..", "configs", "train_ema.yaml"
-)
+# RVM_CONFIG_PATH = os.path.join(
+#     os.path.dirname(os.path.abspath(__file__)), "..", "..", "configs", "train_ema.yaml"
+# )
 
+RVM_CONFIG_PATH = '/home/rvm/configs/train_ema.yaml'
 
 def load_rvm_model_config(path: str = RVM_CONFIG_PATH) -> dict:
     with open(path, "r") as f:
