@@ -12,7 +12,7 @@ evals/pusht
 
 *.csv
 checkpoints_ema_jax
-
+dataset_ssv2
 */wandb/*
 *.mp4
 *.webm

@@ -1,0 +1,12 @@
+train_json: /home/rvm/ablations/ssv2_probe/dataset_ssv2/labels/train.json
+test_json: /home/rvm/ablations/ssv2_probe/dataset_ssv2/labels/test.json
+validation_json: /home/rvm/ablations/ssv2_probe/dataset_ssv2/labels/validation.json
+
+test_answer_csv: /home/rvm/ablations/ssv2_probe/dataset_ssv2/labels/test-answers.csv
+labels_json: /home/rvm/ablations/ssv2_probe/dataset_ssv2/labels/labels.json
+
+
+videos_dir: /home/rvm/ablations/ssv2_probe/dataset_ssv2/20bn-something-something-v2/
+
+num_frames: 16
+frame_stride: 2

@@ -237,6 +237,7 @@ class Trainer:
         total_loss, total_correct, total_samples = 0.0, 0, 0
 
         for frames, labels in tqdm(self.eval_loader, desc="Eval", leave=False):
+        
             features = self._extract_features(frames)
             labels = labels.to(self.device)
 
@@ -264,8 +265,8 @@ def build_dataloaders(config: TrainConfig):
         num_workers=config.num_workers, drop_last=True,
     )
     eval_loader = DataLoader(
-        eval_set, batch_size=config.batch_size, shuffle=False,
-        num_workers=config.num_workers,
+        eval_set, batch_size=config.batch_size//4, shuffle=False,
+        num_workers=config.num_workers//2,
     )
     return train_loader, eval_loader
 
