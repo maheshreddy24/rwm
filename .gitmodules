@@ -1,0 +1,3 @@
+[submodule "evals/intphy2/IntPhys2"]
+	path = evals/intphy2/IntPhys2
+	url = https://github.com/facebookresearch/IntPhys2.git
