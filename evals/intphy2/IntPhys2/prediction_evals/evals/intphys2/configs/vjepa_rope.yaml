@@ -1,0 +1,53 @@
+nodes: 1
+tasks_per_node: 8
+tag: default
+eval_name: intphys2
+folder: /checkpoint/vjepa-h-rope/
+resume_checkpoint: false
+experiment:
+  data:
+    batch_size: 1
+    resolution: 224
+    stride_sliding_window: 2
+    use_bfloat16: true
+    frames_per_clip: 16
+    context_lengths: [4,6,8,10,12,14]
+    frame_steps: 10
+    num_frames_to_pred: -1
+    dataset: intphys2-debug
+  max_context_mode: true
+model_kwargs:
+  checkpoint: /checkpoint/vjepa-h-rope/jepa-latest.pth.tar  
+  module_name: app.vjepa.modelcustom.default_wrapper
+  wrapper_kwargs:
+    no_predictor: false
+    # num_output_frames: 2
+  pretrain_kwargs:
+    resolution: 224
+    predictor:
+      model_name: vit_predictor
+      checkpoint_key: predictor
+      use_mask_tokens: true
+      is_causal: false
+      patch_size: 16
+      tubelet_size: 2
+      predictor_embed_dim: 384
+      depth: 12
+      uniform_power: true
+      num_mask_tokens: 2
+      zero_init_mask_tokens: true
+      use_sdpa: true
+      use_SiLU: true
+      wide_SiLU: false
+    encoder:
+      model_name: vit_huge_rope
+      checkpoint_key: encoder
+      patch_size: 16
+      tubelet_size: 2
+      uniform_power: true
+      use_sdpa: true
+      use_SiLU: true
+      wide_SiLU: false
+      is_causal: false
+    target_encoder:
+      checkpoint_key: target_encoder

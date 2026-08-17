@@ -4,6 +4,8 @@ k700_train_361.tar.gz
 *.tar.gz
 *.tar
 *.mp4
+evals/intphy2/IntPhys2/prediction_evals/datasets
+evals/intphy2/IntPhys2/checkpoint
 
 */ssv2/*
 20bn*

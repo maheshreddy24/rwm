@@ -1,0 +1,27 @@
+nodes: 8
+tasks_per_node: 8
+tag: default
+eval_name: intphys2
+folder: /checkpoint/cosmos/
+resume_checkpoint: false
+experiment:
+  data:
+    batch_size: 1
+    resolution: 224
+    stride_sliding_window: 4
+    use_bfloat16: true
+    frames_per_clip: 33
+    context_lengths: [9]
+    frame_steps: 10
+    num_frames_to_pred: -1
+    dataset: intphys2-debug
+model_kwargs:
+  checkpoint: /checkpoint/cosmos/cosmos-predict1/checkpoints/
+  module_name: app.cosmos.modelcustom.latent_wrapper
+  wrapper_kwargs:
+    no_predictor: false
+    # num_output_frames: 2
+  pretrain_kwargs:
+    resolution: 224
+    encoder:
+      model_name: none

@@ -1,0 +1,57 @@
+nodes: 1
+tasks_per_node: 8
+tag: default
+eval_name: intphys2
+folder: /checkpoint/vjepa-2-h/
+resume_checkpoint: false
+experiment:
+  data:
+    batch_size: 1
+    resolution: 256
+    stride_sliding_window: 2
+    use_bfloat16: true
+    frames_per_clip: 48
+    context_lengths: [12,18,24,30,36,42]
+    frame_steps: 10
+    num_frames_to_pred: -1
+    dataset: intphys2-debug
+  max_context_mode: true
+model_kwargs:
+  checkpoint: /checkpoint/vjepa-2-h/vith.pt
+  module_name: app.vjepa.modelcustom.default_wrapper
+  wrapper_kwargs:
+    no_predictor: false
+    # num_output_frames: 2
+  pretrain_kwargs:
+    resolution: 256
+    predictor:
+      model_name: vit_predictor
+      checkpoint_key: predictor
+      depth: 12
+      is_causal: false
+      local_window:
+      - -1
+      - -1
+      - -1
+      num_heads: 12
+      uniform_power: true
+      use_activation_checkpointing: true
+      use_mask_tokens: true
+      use_rope: true
+      zero_init_mask_tokens: true
+      num_mask_tokens: 10
+    encoder:
+      model_name: vit_huge
+      checkpoint_key: encoder
+      is_causal: false
+      local_window:
+      - -1
+      - -1
+      - -1
+      uniform_power: true
+      use_activation_checkpointing: true
+      use_mask_tokens: true
+      use_rope: true
+      zero_init_mask_tokens: true
+    target_encoder:
+      checkpoint_key: target_encoder
