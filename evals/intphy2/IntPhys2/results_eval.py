@@ -101,6 +101,16 @@ def main():
     print("\ntype values:", dict(m["type"].value_counts()))
     m["is_possible"] = (~m["type"].astype(str).str.contains("Impossible")).astype(int)
     print("is_possible counts:", dict(m["is_possible"].value_counts()))
+
+    # IntPhys2 `type` is "<subpair>_<outcome>", e.g. "1_Possible" / "2_Impossible".
+    # The leading index identifies WHICH of the two matched pairs in the
+    # quadruplet a video belongs to -- that is the correct pairing key.
+    m["subpair"] = m["type"].astype(str).str.split("_").str[0]
+    print("subpair counts:", dict(m["subpair"].value_counts()))
+    PAIR_COLS = ["SceneIndex", "subpair"]
+    bad = m.groupby(PAIR_COLS)["is_possible"].agg(["size", "sum"])
+    bad = bad[(bad["size"] != 2) | (bad["sum"] != 1)]
+    print(f"malformed pair groups: {len(bad)} (want 0)")
     if "occluder" in m.columns:
         print("\ntype x occluder:\n", pd.crosstab(m["type"], m["occluder"]))
     comp = m.groupby("SceneIndex")["is_possible"].agg(["size", "sum"])
@@ -113,7 +123,7 @@ def main():
     print("\n=== All (Main set) ===")
     print(f"{'score':<16}{'Relative':>10}{'Absolute':>10}{'Oracle':>10}{'#pairs':>8}")
     for sc in cols:
-        rel, n = relative_accuracy(m, sc)
+        rel, n = relative_accuracy(m, sc, PAIR_COLS)
         ab, best = absolute_accuracy(m, sc)
         print(f"{sc:<16}{rel:>10.2f}{ab:>10.2f}{best:>10.2f}{n:>8}")
 
@@ -124,7 +134,7 @@ def main():
             continue
         print(f"\n-- {col} --")
         for v, sub in m.groupby(col):
-            rel, n = relative_accuracy(sub, sc)
+            rel, n = relative_accuracy(sub, sc, PAIR_COLS)
             ab, best = absolute_accuracy(sub, sc)
             print(f"  {str(v):<24} n={len(sub):>4}  rel={rel:6.2f}  "
                   f"abs={ab:6.2f}  oracle={best:6.2f}  pairs={n}")
