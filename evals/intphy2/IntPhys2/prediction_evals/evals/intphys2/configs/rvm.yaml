@@ -17,7 +17,8 @@ experiment:
     dataset: intphys2-main
   max_context_mode: true
 model_kwargs:
-  checkpoint: /home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz
+  # checkpoint: /home/rvm/rvm_ckpts/pretrain_rvm_small16_256_204031069.npz
+  checkpoint: /home/rvm/rvm_ckpts/pretrain_rvm_large16_256_202497301.npz
   # !wget https://storage.googleapis.com/representations4d/checkpoints/pretrain_rvm_large16_256_202497301.npz
   module_name: app.rvm.modelcustom.default_wrapper
   wrapper_kwargs:
@@ -25,4 +26,4 @@ model_kwargs:
     # app/rvm/modelcustom/default_wrapper.py for why this can't just be read off the model.
     frame_step: 10
   pretrain_kwargs:
-    variant: S
+    variant: L
