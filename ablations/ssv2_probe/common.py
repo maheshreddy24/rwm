@@ -44,3 +44,23 @@ class MeanPoolProbe(nn.Module):
     def forward(self, x):          # x: (bs, t, n, dim)
         x = x.mean(dim=(1, 2))     # (bs, dim) -- global avg over time and space
         return self.head(self.norm(x))
+
+
+
+class CNNProbe(nn.Module):
+    def __init__(self, inp_channels, num_classes, dim):
+        super().__init__()
+
+        self.layernorm = nn.LayerNorm()
+        self.cnn = nn.Sequential(
+            nn.Conv2d(in_channels=inp_channels, out_channels=inp_channels//2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels=inp_channels//2, out_channels=1),
+            # nn.ReLU()
+        )
+        self.head = nn.Linear(in_features=dim, out_features=num_classes)
+
+    def forward(self, x):
+        x = self.layernorm(x)
+        x = self.cnn(x).squeeze(1) # bs, 1, num --> bs, num
+        return self.head(x)

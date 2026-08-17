@@ -33,7 +33,7 @@ import wandb
 import yaml
 from tqdm import tqdm
 
-from common import MeanPoolProbe, get_logger, warmup_cosine_factor
+from common import MeanPoolProbe, get_logger, warmup_cosine_factor, CNNProbe
 from rvm_jax import build_model
 from ssv2_inf_dataset import SSv2
 
@@ -156,7 +156,9 @@ class Trainer:
         count = sum(np.prod(v.shape) for v in jax.tree_util.tree_leaves(self.backbone_params))
         self.logger.info(f"backbone params: {count:,}")
 
-        self.model = MeanPoolProbe(dim=config.feature_dim, num_classes=config.num_classes).to(self.device)
+        # self.model = MeanPoolProbe(dim=config.feature_dim, num_classes=config.num_classes).to(self.device)
+        num_patches = 16 * 256
+        self.model = CNNProbe(inp_channels=num_patches, num_classes=config.num_classes, dim = config.feature_dim).to(self.device)
         self.logger.info(f"probe params: {sum(p.numel() for p in self.model.parameters()):,}")
 
         self.criterion = nn.CrossEntropyLoss()

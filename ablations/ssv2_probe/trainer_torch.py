@@ -23,7 +23,7 @@ import yaml
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from common import MeanPoolProbe, get_logger, warmup_cosine_factor
+from common import MeanPoolProbe, get_logger, warmup_cosine_factor, CNNProbe
 from rvm import RVM
 from ssv2_inf_dataset import SSv2
 
@@ -117,7 +117,10 @@ class Trainer:
         self.backbone = self.backbone.to(self.device).eval()
         self.logger.info(f"backbone params: {sum(p.numel() for p in self.backbone.parameters()):,}")
 
-        self.model = MeanPoolProbe(dim=self.backbone.d_enc, num_classes=config.num_classes).to(self.device)
+        # self.model = MeanPoolProbe(dim=self.backbone.d_enc, num_classes=config.num_classes).to(self.device)
+        num_patches = 16 * 256
+        self.model = CNNProbe(inp_channels=num_patches, num_classes=config.num_classes, dim = config.feature_dim).to(self.device)
+
         self.logger.info(f"probe params: {sum(p.numel() for p in self.model.parameters()):,}")
 
         self.criterion = nn.CrossEntropyLoss()
