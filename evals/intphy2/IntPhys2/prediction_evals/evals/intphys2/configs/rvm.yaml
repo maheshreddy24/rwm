@@ -1,0 +1,28 @@
+nodes: 1
+tasks_per_node: 8
+tag: default
+eval_name: intphys2
+folder: /home/rvm/evals/intphy2/IntPhys2/checkpoint/rvm/
+resume_checkpoint: false
+experiment:
+  data:
+    batch_size: 1
+    resolution: 256
+    stride_sliding_window: 2
+    use_bfloat16: true
+    frames_per_clip: 16
+    context_lengths: [4,6,8,10,12,14]
+    frame_steps: 10
+    num_frames_to_pred: -1
+    dataset: intphys2-main
+  max_context_mode: true
+model_kwargs:
+  checkpoint: /home/rvm/checkpoints/pretrain_rvm_small16_256_204031069.npz
+  # !wget https://storage.googleapis.com/representations4d/checkpoints/pretrain_rvm_large16_256_202497301.npz
+  module_name: app.rvm.modelcustom.default_wrapper
+  wrapper_kwargs:
+    # Must match experiment.data.frame_steps -- see the comment on `frame_step` in
+    # app/rvm/modelcustom/default_wrapper.py for why this can't just be read off the model.
+    frame_step: 10
+  pretrain_kwargs:
+    variant: S
