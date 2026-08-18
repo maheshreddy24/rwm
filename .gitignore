@@ -10,6 +10,7 @@ evals/intphy2/IntPhys2/checkpoint
 */ssv2/*
 20bn*
 evals/pusht
+local_tests.ipynb
 *.pyc
 
 *.csv
