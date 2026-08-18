@@ -222,7 +222,7 @@ class RecurrentWorldModel(nn.Module):
         B, N = frames.shape[:2]
         img = frames.shape[2:]
         device = frames.device
-        target_idx = target_idx.to(device).long()
+        target_idx = target_idx.to(device).long() # assume C...N
         Tt = int(target_idx.numel())
         assert int(target_idx.min()) >= 1, "frame 0 has no history; it cannot be a target"
         assert int(target_idx.max()) < N, "target_idx out of range"
@@ -280,19 +280,16 @@ class RecurrentWorldModel(nn.Module):
         )
         pred = self.repr_head(decoded).view(B, Tt, n_tok, self.d_enc)
 
-        target = self.encode_target(
-            frames[:, target_idx].reshape(B * Tt, *img)
-        ).view(B, Tt, n_tok, self.d_enc)
-
         gap = frame_times[:, target_idx] - frame_times[:, target_idx - 1]
 
+        loss = self.loss(pred=pred, target=feats, target_idx=target_idx)
         return {
             "pred": pred,                # (B, Tt, n_tok, D)
-            "target": target,            # (B, Tt, n_tok, D)  detached
             "memory": memory,            # (B, N,  n_tok, D)
             "state": state,              # (B, n_tok, D)
             "gap": gap,                  # (B, Tt), reported only; RoPE carries it
-            "grid": int(round(math.sqrt(P))),
+            "grid": int(round(math.sqrt(P))),            
+            "loss": loss
         }
 
     def _build_queries(self, n_rows: int, P: int, dtype) -> torch.Tensor:
@@ -303,13 +300,10 @@ class RecurrentWorldModel(nn.Module):
         cls = self.cls_query.expand(n_rows, 1, self.dec_dim).to(dtype)
         return torch.cat([cls, q], dim=1)
 
-    def loss(self, out: dict, include_cls: bool = False) -> torch.Tensor:
-        pred, target = out["pred"], out["target"]
-        if not include_cls and not self.drop_cls:
-            pred, target = pred[:, :, 1:], target[:, :, 1:]
-        return F.smooth_l1_loss(pred, target.detach(), beta=self.loss_beta)
+    def loss(self, pred: torch.Tensor, target: torch.Tensor, target_idx: torch.Tensor) -> torch.Tensor:
+        """target is `feats` (B, N, n_tok, D); pick out the frames pred was built for."""
+        return F.mse_loss(pred, target[:, target_idx, ...].detach())
 
-    # inference
 
     @torch.no_grad()
     def rollout(

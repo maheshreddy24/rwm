@@ -63,6 +63,7 @@ class Trainer:
         self.device = self.config.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = model.to(self.device)
+        self.min_context = self.config.get("min_context", 10)
         print(f"Device used is {self.device} ===========================")
 
         self.target_encoder = model.encoder  # frozen; shared weights, no separate EMA copy
@@ -248,22 +249,34 @@ class Trainer:
         per_token = (pred.float() - target.float()).pow(2).mean(dim=-1)
         return (per_token * mask).sum() / mask.sum().clamp(min=1.0)
 
-    def _train_step(self, batch):
+    def _forward_batch(self, batch):
+        """(out_dict, loss) for either batch format: tf `context`/`sampled_indices`
+        (RecurrentWorldModel, which computes its own loss) or the older
+        `source`/`target`/`target_deltas` (RVM, scored against a teacher target)."""
+        if "context" in batch:
+            context = batch["context"].to(self.device, non_blocking=True)         # (B, N, C, H, W)
+            frame_times = batch["sampled_indices"].to(self.device, non_blocking=True).float()
+            target_idx = torch.arange(self.min_context, context.shape[1], device=self.device)
+            out = self.model(context, target_idx, frame_times)
+            return out, out["loss"]
+
         source, target, target_deltas = _unpack_batch(batch)
         source = source.to(self.device, non_blocking=True)   # (B, Ts, C, H, W)
         target = target.to(self.device, non_blocking=True)   # (B, Tt, C, H, W)
         target_deltas = target_deltas.to(self.device, non_blocking=True)
+        out = self.model(source, target, target_deltas)
+        teacher = self._teacher_representation(target)
+        loss = self.representation_loss(
+            out["decoded_representation"][..., 1:, :],
+            teacher[..., 1:, :],
+            out["mask"],
+        )
+        return out, loss
 
+    def _train_step(self, batch):
         self.optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=self.device, enabled=self.config["amp"]):
-            out = self.model(source, target, target_deltas)
-            with torch.no_grad():
-                teacher = self._teacher_representation(target)
-            loss = self.representation_loss(
-                out["decoded_representation"][..., 1:, :],
-                teacher[..., 1:, :],
-                out["mask"],
-            )
+            _, loss = self._forward_batch(batch)
 
         self.scaler.scale(loss).backward()
         if self.config["grad_clip_norm"] is not None:
@@ -278,19 +291,8 @@ class Trainer:
     def eval(self):
         self.model.eval()
         total_loss, n_batches = 0.0, 0
-        for batch in tqdm(self.eval_loader, total = len(self.eval_loader), leave = True):
-            source, target, target_deltas = _unpack_batch(batch)
-            source = source.to(self.device, non_blocking=True)
-            target = target.to(self.device, non_blocking=True)
-            target_deltas = target_deltas.to(self.device, non_blocking=True)
-
-            out = self.model(source, target, target_deltas)
-            teacher = self._teacher_representation(target)
-            loss = self.representation_loss(
-                out["decoded_representation"][..., 1:, :],
-                teacher[..., 1:, :],
-                out["mask"],
-            )
+        for batch in tqdm(self.eval_loader, total=len(self.eval_loader), leave=True):
+            _, loss = self._forward_batch(batch)
             total_loss += loss.item()
             n_batches += 1
 

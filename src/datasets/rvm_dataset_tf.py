@@ -16,20 +16,18 @@ RRC_RATIO = (0.75, 1.25)
 
 
 class RVMDataset(Dataset):
-    """Samples (source frames, target frames, sampled_indices) triples for `RVM.forward`.
+    """Samples a rolled-out clip of frames for `RecurrentWorldModel.forward`.
 
     Config keys:
-        video_csv:          path to a csv with a `path` column (extra columns ignored)
-        num_source_frames:  Ts, number of context frames fed to the recurrent core
-        num_target_frames:  Tt, number of future frames to reconstruct
-        max_delta:          inclusive upper bound on the source->target frame gap,
-                             must match RVM(max_delta=...) since deltas index an embedding table
-        frame_size:         (H, W) to resize decoded frames to, default (256, 256)
+        video_csv:            path to a csv with a `path` column (extra columns ignored)
+        roll_out:              frames per clip, V-JEPA 2.1 style (default 16)
+        max_stride:            max frame stride between consecutive sampled frames (default 3)
+        min_duration_frames:   videos with fewer frames than this are skipped (default 48)
+        frame_size:            (H, W) to resize decoded frames to, default (256, 256)
 
-    Source frames are always Ts consecutive frames; target frames are sampled at
-    random (unsorted) gaps of [4, max_delta] after the last source frame. A single
-    RandomResizedCrop + optional horizontal flip is applied per-video, shared across
-    every source and target frame, so the crop doesn't jitter between frames.
+    A clip is `roll_out` frames spaced by a random stride in [1, max_stride], starting
+    at a random offset. A single RandomResizedCrop + optional horizontal flip is applied
+    per-clip, shared across every frame, so the crop doesn't jitter between frames.
     """
 
     def __init__(self, config):
@@ -112,19 +110,24 @@ class RVMDataset(Dataset):
 
     def _load_frames(self, fname):
         vr = self._open_video(fname)
-        if vr is None:
+        if vr is None or len(vr) < self.min_duration:
             return None
 
         total_frames = len(vr)
-        sampled_indices = np.linspace(0, total_frames, self.roll_out).astype(int)
+        stride = int(self.rng.integers(1, self.max_stride + 1))
+        span = (self.roll_out - 1) * stride
+        if span >= total_frames:
+            stride = max(1, (total_frames - 1) // (self.roll_out - 1))
+            span = (self.roll_out - 1) * stride
+        start = int(self.rng.integers(0, total_frames - span))
+        sampled_indices = start + np.arange(self.roll_out) * stride
 
-
+        buffer = vr.get_batch(sampled_indices).asnumpy()  # [roll_out, H, W, 3]
         buffer = self._augment(buffer)
-        frames = buffer.astype(np.float32) / 255.0  # [Ts+Tt, H, W, 3]
-        frames = torch.from_numpy(frames).permute(0, 3, 1, 2).contiguous()  # [Ts+Tt, C, H, W]
+        frames = buffer.astype(np.float32) / 255.0  # [roll_out, H, W, 3]
+        frames = torch.from_numpy(frames).permute(0, 3, 1, 2).contiguous()  # [roll_out, C, H, W]
 
-        context = frames[sampled_indices]
-        return context, torch.from_numpy(sampled_indices)
+        return frames, torch.from_numpy(sampled_indices.astype(np.int64))
 
     def __getitem__(self, index):
         # Try up to 20 times to find a valid sample.
@@ -145,33 +148,27 @@ class RVMDataset(Dataset):
         print("returning random")
 
         context = torch.rand(
-            self.num_target_frames,
+            self.roll_out,
             3,
             self.frame_size[0],
             self.frame_size[1],
             dtype=torch.float32,
         )
-
-        sampled_indices = torch.randint(
-            low=4,
-            high=self.max_delta + 1,
-            size=(self.num_target_frames,),
-            dtype=torch.long,
-        )
+        sampled_indices = torch.arange(self.roll_out, dtype=torch.long)
 
         return {
             "context": context,
             "sampled_indices": sampled_indices,
         }
+
     def __len__(self):
         return len(self.data_paths)
 
     @staticmethod
     def collate_fn(batch):
         return {
-            # "source": torch.stack([item["source"] for item in batch], dim=0),        # [B, Ts, C, H, W]
-            "conext": torch.stack([item["conext"] for item in batch], dim=0),        # [B, Tt, C, H, W]
-            "sampled_indices": torch.stack([item["sampled_indices"] for item in batch], dim=0),  # [B, Tt]
+            "context": torch.stack([item["context"] for item in batch], dim=0),         # [B, roll_out, C, H, W]
+            "sampled_indices": torch.stack([item["sampled_indices"] for item in batch], dim=0),  # [B, roll_out]
         }
 
 
@@ -186,6 +183,5 @@ if __name__ == "__main__":
     )
 
     batch = next(iter(loader))
-    # ic(batch["source"].shape)
-    ic(batch["conext"].shape)
+    ic(batch["context"].shape)
     ic(batch["sampled_indices"].shape)
