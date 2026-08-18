@@ -1,0 +1,27 @@
+nodes: 1
+tasks_per_node: 8
+tag: default
+eval_name: intphys2
+folder: /checkpoint/vjepa-2-1-giant/
+resume_checkpoint: false
+experiment:
+  data:
+    batch_size: 1
+    resolution: 384
+    stride_sliding_window: 2
+    use_bfloat16: true
+    frames_per_clip: 64
+    context_lengths: [16,24,32,40,48,56]
+    frame_steps: 10
+    num_frames_to_pred: -1
+    dataset: intphys2-debug
+  max_context_mode: true
+model_kwargs:
+  checkpoint: /checkpoint/vjepa-2-1-giant/vjepa2_1_vitg_384.pt 
+  module_name: app.vjepa2_1.modelcustom.default_wrapper
+  wrapper_kwargs: {}
+  pretrain_kwargs:
+    resolution: 384
+    arch_name: vit_giant_xformers
+    patch_size: 16
+    tubelet_size: 2

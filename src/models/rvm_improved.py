@@ -3,148 +3,15 @@ from __future__ import annotations
 import contextlib
 import copy
 import math
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-
-def sincos_1d(positions: torch.Tensor, dim: int) -> torch.Tensor:
-    """Sinusoidal embedding of arbitrary (possibly fractional) positions.
-
-    Args:
-        positions: (M,) float tensor. Patch indices, time gaps, whatever.
-        dim:       embedding width.
-    Returns:
-        (M, dim)
-    """
-    j = torch.arange(dim, device=positions.device, dtype=torch.float32)
-    denom = torch.pow(10000.0, 2 * torch.div(j, 2, rounding_mode="floor") / dim)
-    a = positions.float().unsqueeze(1) / denom
-    out = torch.empty_like(a)
-    out[:, 0::2] = torch.sin(a[:, 0::2])
-    out[:, 1::2] = torch.cos(a[:, 1::2])
-    return out
-
-
-def sample_frame_times(
-    batch: int,
-    n_frames: int,
-    gap_min: float = 1.0,
-    gap_max: float = 12.0,
-    device=None,
-    generator: Optional[torch.Generator] = None,
-) -> torch.Tensor:
-    """Cumulative-sum of uniform gaps, as in DINO-world's variable-FPS sampling.
-
-    Returns (batch, n_frames) float "times" starting at 0. Use these to pick the
-    nearest real frame from each video, and pass the same tensor to `forward`.
-    """
-    gaps = torch.rand(batch, n_frames - 1, device=device, generator=generator)
-    gaps = gap_min + gaps * (gap_max - gap_min)
-    zero = gaps.new_zeros(batch, 1)
-    return torch.cat([zero, gaps.cumsum(dim=1)], dim=1)
-
-
-
-class MultiHeadAttention(nn.Module):
-    """Self- or cross-attention with optional additive/boolean mask."""
-
-    def __init__(self, d_model: int, num_heads: int, d_attn: Optional[int] = None):
-        super().__init__()
-        d_attn = d_attn or d_model
-        assert d_attn % num_heads == 0, "d_attn must be divisible by num_heads"
-        self.num_heads = num_heads
-        self.head_dim = d_attn // num_heads
-
-        self.q = nn.Linear(d_model, d_attn)
-        self.k = nn.Linear(d_model, d_attn)
-        self.v = nn.Linear(d_model, d_attn)
-        self.out = nn.Linear(d_attn, d_model)
-
-    def _split(self, t: torch.Tensor) -> torch.Tensor:
-        B, N, _ = t.shape
-        return t.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        kv: Optional[torch.Tensor] = None,
-        attn_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        kv = x if kv is None else kv
-        q, k, v = self._split(self.q(x)), self._split(self.k(kv)), self._split(self.v(kv))
-        o = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
-        o = o.transpose(1, 2).reshape(x.shape[0], x.shape[1], -1)
-        return self.out(o)
-
-
-class CrossAttentionBlock(nn.Module):
-    """Pre-norm: cross-attn -> MLP -> self-attn.
-
-    The mask applies only to cross-attention. Self-attention mixes a single
-    target frame's own query tokens, which is always legal.
-    """
-
-    def __init__(self, d_model: int, num_heads: int, mlp_dim: int):
-        super().__init__()
-        self.ca_norm = nn.LayerNorm(d_model)
-        self.ca = MultiHeadAttention(d_model, num_heads)
-        self.mlp_norm = nn.LayerNorm(d_model)
-        self.mlp = nn.Sequential(
-            nn.Linear(d_model, mlp_dim), nn.GELU(), nn.Linear(mlp_dim, d_model)
-        )
-        self.sa_norm = nn.LayerNorm(d_model)
-        self.sa = MultiHeadAttention(d_model, num_heads)
-
-    def forward(self, x, kv, attn_mask=None):
-        x = x + self.ca(self.ca_norm(x), kv, attn_mask)
-        x = x + self.mlp(self.mlp_norm(x))
-        x = x + self.sa(self.sa_norm(x))
-        return x
-
-
-class CrossAttentionTransformer(nn.Module):
-    def __init__(self, d_model: int, num_heads: int, num_layers: int, mlp_dim: int):
-        super().__init__()
-        self.blocks = nn.ModuleList(
-            [CrossAttentionBlock(d_model, num_heads, mlp_dim) for _ in range(num_layers)]
-        )
-        self.out_norm = nn.LayerNorm(d_model)
-
-    def forward(self, x, kv, attn_mask=None):
-        for blk in self.blocks:
-            x = blk(x, kv, attn_mask)
-        return self.out_norm(x)
-
-
-class GatedRecurrentCore(nn.Module):
-    """GRU over a whole token set, cross-attention transformer as candidate.
-
-        z  = sigmoid(W_z x + U_z h)
-        r  = sigmoid(W_r x + U_r h)
-        h~ = XAttn(q=x, kv=r * LN(h))
-        h  <- (1 - z) * h + z * h~
-    """
-
-    def __init__(self, d_model: int, num_heads: int, num_layers: int, mlp_dim: int):
-        super().__init__()
-        self.input_update = nn.Linear(d_model, d_model, bias=False)
-        self.state_update = nn.Linear(d_model, d_model, bias=False)
-        self.input_reset = nn.Linear(d_model, d_model, bias=False)
-        self.state_reset = nn.Linear(d_model, d_model, bias=False)
-        self.state_norm = nn.LayerNorm(d_model, eps=1e-4, bias=False)
-        self.transformer = CrossAttentionTransformer(d_model, num_heads, num_layers, mlp_dim)
-
-    def forward(self, x: torch.Tensor, state: torch.Tensor):
-        z = torch.sigmoid(self.input_update(x) + self.state_update(state))
-        r = torch.sigmoid(self.input_reset(x) + self.state_reset(state))
-        h = self.transformer(x, r * self.state_norm(state))
-        out = (1.0 - z) * state + z * h
-        return out, out
-
+from .utils.attention import CrossAttentionTransformer, GatedRecurrentCore
+from .utils.rope import RoPE, axial_rope, rope_periods
 
 
 class RecurrentWorldModel(nn.Module):
@@ -155,6 +22,27 @@ class RecurrentWorldModel(nn.Module):
         Tt  target frames         L   = N * (1 + P)  flattened memory length
 
     Token axis is always [CLS, patch_0 .. patch_{P-1}], so width is 1 + P.
+
+    Positional encoding
+    -------------------
+    Every token -- context and query alike -- carries a coordinate triple
+    (tau, i, j): absolute timestamp, and normalized spatial position on a
+    [-1, +1] grid so that changing input resolution does not change the
+    relative distance between patches. These are injected as a 3-axial rotary
+    embedding inside each attention block, following DINO-world (Baldassarre
+    et al., 2025, Sec. 3.2). The query token is a single learnable vector with
+    no positional content of its own; two queries for different patches of the
+    same target frame start out as literally the same vector and are separated
+    only by their rotations.
+
+    Because (R(a) q) . (R(b) k) = q . R(b - a) k, absolute coordinates on both
+    sides yield relative offsets in the logits. That is what tags the memory
+    with per-frame time for free, which an additive query-side gap cannot do.
+
+    CLS sits at spatial (0, 0) -- the grid centre -- with its frame's real tau.
+    It is distinguished from the centre patch by content (`cls_query`), not by
+    rotation. Passing `drop_cls=True` reproduces DINO-world exactly, which
+    discards CLS and registers and keeps only patch tokens.
 
     Args:
         encoder:        pre-built HF backbone; must expose .embeddings,
@@ -169,7 +57,16 @@ class RecurrentWorldModel(nn.Module):
                                    (L = N*(1+P)), causality via mask.
                         'state' -> attend only the GRU state after frame t-1
                                    (L = 1+P). Strictly causal by construction,
-                                   far cheaper, no mask needed.
+                                   far cheaper, no mask needed. That state is
+                                   tagged tau_{t-1}, i.e. "the summary as of
+                                   the last observed frame".
+        rope_time_periods: (fastest, slowest) period in the SAME UNITS as
+                        `frame_times`. The default suits gaps of ~1-12 with
+                        clips spanning ~100. If you feed seconds, DINO-world's
+                        range is (1e-2, 1e2).
+        rope_space_periods: periods in normalized grid units. Range is 2.0
+                        edge-to-edge, one patch is 2/grid, so ~(0.2, 4.0)
+                        covers neighbour-level to whole-image structure.
     """
 
     def __init__(
@@ -189,6 +86,9 @@ class RecurrentWorldModel(nn.Module):
         context_mode: str = "full",
         checkpoint_core: bool = False,
         loss_beta: float = 0.1,
+        rope_time_periods: Tuple[float, float] = (1.0, 200.0),
+        rope_space_periods: Tuple[float, float] = (0.2, 4.0),
+        drop_cls: bool = False,
     ):
         super().__init__()
         assert context_mode in ("full", "state")
@@ -206,6 +106,9 @@ class RecurrentWorldModel(nn.Module):
         self.checkpoint_core = checkpoint_core
         self.ema_momentum = ema_momentum
         self.loss_beta = loss_beta
+        self.t_periods = rope_time_periods
+        self.s_periods = rope_space_periods
+        self.drop_cls = drop_cls
 
         if freeze_encoder:
             for p in self.encoder.parameters():
@@ -229,41 +132,28 @@ class RecurrentWorldModel(nn.Module):
         self.repr_head = nn.Linear(dec_dim, self.d_enc)
 
         # the entire content of a query: one learnable vector, shared by every
-        # patch of every target frame. Position and time are added on top.
+        # patch of every target frame. Position enters only through rotation.
         self.query_token = nn.Parameter(torch.randn(1, 1, dec_dim) * 0.02)
         self.cls_query = nn.Parameter(torch.randn(1, 1, dec_dim) * 0.02)
 
-        self.register_buffer("_posenc", torch.zeros(0), persistent=False)
+    # encoder
 
-    # ----------------------------- encoder utils ---------------------------- #
-
-    def _embed(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        """(M, 3, H, W) -> (M, 1+P, D). CLS prepended, ViT pos-emb already added."""
-        return self.encoder.embeddings(pixel_values)
-
-    def _blocks(self, tokens: torch.Tensor) -> torch.Tensor:
-        h = self.encoder.encoder(tokens).last_hidden_state
-        return self.encoder.layernorm(h)
-
-    def _encoder_ctx(self):
-        # nullcontext, NOT enable_grad: enable_grad would build a graph even
-        # when the caller wrapped the model in torch.no_grad().
-        return torch.no_grad() if self.freeze_encoder else contextlib.nullcontext()
+    def _maybe_drop_cls(self, tokens: torch.Tensor) -> torch.Tensor:
+        return tokens[..., 1:, :] if self.drop_cls else tokens
 
     def encode(self, frames: torch.Tensor) -> torch.Tensor:
         """(M, 3, H, W) -> (M, 1+P, D) through the online encoder."""
-        with self._encoder_ctx():
-            return self._blocks(self._embed(frames))
+        ctx = torch.no_grad() if self.freeze_encoder else contextlib.nullcontext()
+        with ctx:
+            h = self.encoder.encoder(self.encoder.embeddings(frames)).last_hidden_state
+            return self._maybe_drop_cls(self.encoder.layernorm(h))
 
     @torch.no_grad()
     def encode_target(self, frames: torch.Tensor) -> torch.Tensor:
         """Detached features used as the regression target."""
-        if self.use_ema:
-            h = self.target_encoder.encoder(
-                self.target_encoder.embeddings(frames)
-            ).last_hidden_state
-            return self.target_encoder.layernorm(h)
-        return self._blocks(self._embed(frames)).detach()
+        enc = self.target_encoder if self.use_ema else self.encoder
+        h = enc.encoder(enc.embeddings(frames)).last_hidden_state
+        return self._maybe_drop_cls(enc.layernorm(h))
 
     @torch.no_grad()
     def update_ema(self, momentum: Optional[float] = None) -> None:
@@ -276,24 +166,51 @@ class RecurrentWorldModel(nn.Module):
         for bt, bs in zip(self.target_encoder.buffers(), self.encoder.buffers()):
             bt.copy_(bs)
 
-    # ------------------------------ query build ----------------------------- #
+    # coordinates
 
-    def _spatial_posenc(self, n: int, device, dtype) -> torch.Tensor:
-        if self._posenc.shape[0] != n or self._posenc.device != device:
-            pos = torch.arange(n, device=device, dtype=torch.float32)
-            self._posenc = sincos_1d(pos, self.dec_dim)
-        return self._posenc.to(dtype)
+    def _grid(self, P: int, device) -> torch.Tensor:
+        """(n_tok, 2) spatial coords on [-1, +1]; CLS (if kept) at the centre.
 
-    def _build_queries(self, n_rows: int, P: int, gap: torch.Tensor,
-                       device, dtype) -> torch.Tensor:
-        """(n_rows, 1+P, Dd). `gap` is (n_rows,) float, time to previous frame."""
-        q = self.query_token.expand(n_rows, P, self.dec_dim).to(dtype)
-        q = q + self._spatial_posenc(P, device, dtype).unsqueeze(0)
-        time = sincos_1d(gap.to(device), self.dec_dim).to(dtype).unsqueeze(1)
-        q = q + time
-        cls = self.cls_query.expand(n_rows, 1, self.dec_dim).to(dtype) + time
-        return torch.cat([cls, q], dim=1)
+        Rebuilt each call: it is a few hundred floats, and unlike a cached
+        buffer it does not mutate module state, so it is compile- and
+        DDP-friendly.
+        """
+        g = int(round(math.sqrt(P)))
+        assert g * g == P, f"{P} patch tokens is not a square grid"
+        lin = torch.linspace(-1.0, 1.0, g, device=device, dtype=torch.float32)
+        ii, jj = torch.meshgrid(lin, lin, indexing="ij")
+        grid = torch.stack([ii.reshape(-1), jj.reshape(-1)], dim=-1)  # (P, 2)
+        if self.drop_cls:
+            return grid
+        return torch.cat([grid.new_zeros(1, 2), grid], dim=0)         # (1+P, 2)
 
+    def _coords(self, tau: torch.Tensor, P: int) -> torch.Tensor:
+        """tau (..., ) absolute times -> (..., n_tok, 3) as (tau, i, j)."""
+        device = tau.device
+        grid = self._grid(P, device)                                  # (n_tok, 2)
+        n_tok = grid.shape[0]
+        sp = grid.expand(*tau.shape, n_tok, 2)
+        t = tau.to(torch.float32).unsqueeze(-1).unsqueeze(-1).expand(*tau.shape, n_tok, 1)
+        return torch.cat([t, sp], dim=-1)
+
+    def _rope(self, coords: torch.Tensor, head_dim: int) -> RoPE:
+        per = rope_periods(head_dim, self.t_periods, self.s_periods, coords.device)
+        return axial_rope(coords, per)
+
+    # forward
+
+    def _run_core(self, feats: torch.Tensor, frame_times: torch.Tensor,
+                  state: torch.Tensor, t: int, n_tok: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """One recurrent step with the right time tags on x and on the state."""
+        hd = self.core.head_dim
+        tau_now = frame_times[:, t]
+        tau_prev = frame_times[:, max(t - 1, 0)]
+        x_pos = self._rope(self._coords(tau_now, n_tok - (0 if self.drop_cls else 1)), hd)
+        s_pos = self._rope(self._coords(tau_prev, n_tok - (0 if self.drop_cls else 1)), hd)
+        if self.checkpoint_core and self.training:
+            return checkpoint(self.core, feats[:, t], state, x_pos, s_pos,
+                              use_reentrant=False)
+        return self.core(feats[:, t], state, x_pos, s_pos)
 
     def forward(
         self,
@@ -313,165 +230,190 @@ class RecurrentWorldModel(nn.Module):
         if frame_times is None:                       # contiguous fallback
             frame_times = torch.arange(N, device=device, dtype=torch.float32)
             frame_times = frame_times.unsqueeze(0).expand(B, N)
+        frame_times = frame_times.to(device=device, dtype=torch.float32)
 
-        feats = self.encode(frames.reshape(B * N, *img))          # (B*N, 1+P, D)
-        feats = feats.view(B, N, *feats.shape[1:])                # (B, N, 1+P, D)
-        P = feats.shape[2] - 1
+        feats = self.encode(frames.reshape(B * N, *img))           # (B*N, n_tok, D)
+        feats = feats.view(B, N, *feats.shape[1:])                 # (B, N, n_tok, D)
+        n_tok = feats.shape[2]
+        P = n_tok if self.drop_cls else n_tok - 1
         dtype = feats.dtype
 
         if state is None:
-            state = feats.new_zeros(B, 1 + P, self.d_enc)
+            state = feats.new_zeros(B, n_tok, self.d_enc)
         memory = []
         for t in range(N):
-            frame = feats[:, t]
-            if self.checkpoint_core and self.training:
-                out, state = checkpoint(self.core, frame, state, use_reentrant=False)
-            else:
-                out, state = self.core(frame, state)
+            out, state = self._run_core(feats, frame_times, state, t, n_tok)
             memory.append(out)
-        memory = torch.stack(memory, dim=1)                       # (B, N, 1+P, D)
+        memory = torch.stack(memory, dim=1)                        # (B, N, n_tok, D)
 
+        hd = self.decoder.head_dim
         if self.context_mode == "full":
-            L = N * (1 + P)
-            kv = self.decoder_embed(memory.reshape(B, L, self.d_enc))       # (B, L, Dd)
-            kv = kv.unsqueeze(1).expand(B, Tt, L, self.dec_dim)
-            kv = kv.reshape(B * Tt, L, self.dec_dim)
+            L = N * n_tok
+            kv = self.decoder_embed(memory.reshape(B, L, self.d_enc))
+            kv = kv.unsqueeze(1).expand(B, Tt, L, self.dec_dim).reshape(B * Tt, L, self.dec_dim)
 
-            frame_of_tok = torch.arange(N, device=device).repeat_interleave(1 + P)
-            allowed = frame_of_tok.view(1, L) < target_idx.view(Tt, 1)      # (Tt, L)
+            # memory[:, t] summarizes everything up to and including frame t,
+            # so it is tagged with tau_t.
+            kv_coords = self._coords(frame_times, P).reshape(B, L, 3)          # (B, L, 3)
+            kv_coords = kv_coords.unsqueeze(1).expand(B, Tt, L, 3).reshape(B * Tt, L, 3)
+
+            frame_of_tok = torch.arange(N, device=device).repeat_interleave(n_tok)
+            allowed = frame_of_tok.view(1, L) < target_idx.view(Tt, 1)         # (Tt, L)
             attn_mask = (
                 allowed.view(1, Tt, 1, 1, L)
                 .expand(B, Tt, 1, 1, L)
                 .reshape(B * Tt, 1, 1, L)
             )
         else:  # 'state': the GRU state after frame t-1 already is the history
-            kv = memory[:, target_idx - 1]                                  # (B,Tt,1+P,D)
-            kv = self.decoder_embed(kv).reshape(B * Tt, 1 + P, self.dec_dim)
+            kv = memory[:, target_idx - 1]                                     # (B,Tt,n_tok,D)
+            kv = self.decoder_embed(kv).reshape(B * Tt, n_tok, self.dec_dim)
+            kv_coords = self._coords(frame_times[:, target_idx - 1], P)        # (B,Tt,n_tok,3)
+            kv_coords = kv_coords.reshape(B * Tt, n_tok, 3)
             attn_mask = None
 
-        gap = (frame_times[:, target_idx] - frame_times[:, target_idx - 1])  # (B, Tt)
-        queries = self._build_queries(B * Tt, P, gap.reshape(-1), device, dtype)
+        q_coords = self._coords(frame_times[:, target_idx], P).reshape(B * Tt, n_tok, 3)
+        queries = self._build_queries(B * Tt, P, dtype)
 
-        decoded = self.decoder(queries, kv, attn_mask)             # (B*Tt, 1+P, Dd)
-        pred = self.repr_head(decoded).view(B, Tt, 1 + P, self.d_enc)
+        decoded = self.decoder(
+            queries, kv, attn_mask,
+            q_pos=self._rope(q_coords, hd), kv_pos=self._rope(kv_coords, hd),
+        )
+        pred = self.repr_head(decoded).view(B, Tt, n_tok, self.d_enc)
 
         target = self.encode_target(
             frames[:, target_idx].reshape(B * Tt, *img)
-        ).view(B, Tt, 1 + P, self.d_enc)
+        ).view(B, Tt, n_tok, self.d_enc)
+
+        gap = frame_times[:, target_idx] - frame_times[:, target_idx - 1]
 
         return {
-            "pred": pred,                # (B, Tt, 1+P, D)
-            "target": target,            # (B, Tt, 1+P, D)  detached
-            "memory": memory,            # (B, N,  1+P, D)
-            "state": state,              # (B, 1+P, D)
-            "gap": gap,                  # (B, Tt)
+            "pred": pred,                # (B, Tt, n_tok, D)
+            "target": target,            # (B, Tt, n_tok, D)  detached
+            "memory": memory,            # (B, N,  n_tok, D)
+            "state": state,              # (B, n_tok, D)
+            "gap": gap,                  # (B, Tt), reported only; RoPE carries it
             "grid": int(round(math.sqrt(P))),
         }
 
+    def _build_queries(self, n_rows: int, P: int, dtype) -> torch.Tensor:
+        """(n_rows, n_tok, Dd). Pure content -- no additive position at all."""
+        q = self.query_token.expand(n_rows, P, self.dec_dim).to(dtype)
+        if self.drop_cls:
+            return q
+        cls = self.cls_query.expand(n_rows, 1, self.dec_dim).to(dtype)
+        return torch.cat([cls, q], dim=1)
+
     def loss(self, out: dict, include_cls: bool = False) -> torch.Tensor:
         pred, target = out["pred"], out["target"]
-        if not include_cls:
+        if not include_cls and not self.drop_cls:
             pred, target = pred[:, :, 1:], target[:, :, 1:]
         return F.smooth_l1_loss(pred, target.detach(), beta=self.loss_beta)
 
+    # inference
 
     @torch.no_grad()
     def rollout(
         self,
         context: torch.Tensor,           # (B, C, 3, H, W)
         gaps: Sequence[float] | torch.Tensor,   # per-step time gaps to predict
+        context_times: Optional[torch.Tensor] = None,   # (B, C) float
         state: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Autoregressive rollout in latent space. Returns (B, S, 1+P, D).
+        """Autoregressive rollout in latent space. Returns (B, S, n_tok, D).
 
         Each predicted frame is fed back through the recurrent core in place of
         encoder features, so this is the inference-time path the teacher-forced
         training objective is an approximation of. Expect the gap between the
         two to widen with horizon.
+
+        The positional convention here is identical to `forward`: predicted
+        frame s is tagged with the absolute time it would have had. Any
+        divergence between the two paths shows up as silent quality loss, so
+        both build coordinates through `_coords`.
         """
         self.eval()
         B, C = context.shape[:2]
         device = context.device
         feats = self.encode(context.reshape(B * C, *context.shape[2:]))
         feats = feats.view(B, C, *feats.shape[1:])
-        P = feats.shape[2] - 1
+        n_tok = feats.shape[2]
+        P = n_tok if self.drop_cls else n_tok - 1
         dtype = feats.dtype
 
-        if state is None:
-            state = feats.new_zeros(B, 1 + P, self.d_enc)
-        memory = []
-        for t in range(C):
-            out, state = self.core(feats[:, t], state)
-            memory.append(out)
+        if context_times is None:
+            context_times = torch.arange(C, device=device, dtype=torch.float32)
+            context_times = context_times.unsqueeze(0).expand(B, C)
+        context_times = context_times.to(device=device, dtype=torch.float32)
 
         if not torch.is_tensor(gaps):
             gaps = torch.tensor(list(gaps), device=device, dtype=torch.float32)
         gaps = gaps.to(device).float()
+        # absolute times of the predicted frames
+        step_times = context_times[:, -1:] + gaps.cumsum(0).unsqueeze(0)   # (B, S)
 
+        if state is None:
+            state = feats.new_zeros(B, n_tok, self.d_enc)
+        memory, times = [], []
+        for t in range(C):
+            out, state = self._run_core(feats, context_times, state, t, n_tok)
+            memory.append(out)
+            times.append(context_times[:, t])
+
+        hd = self.decoder.head_dim
         preds = []
         for s in range(gaps.numel()):
+            tau = step_times[:, s]
             if self.context_mode == "full":
-                mem = torch.stack(memory, dim=1)                  # (B, k, 1+P, D)
-                kv = mem.reshape(B, -1, self.d_enc)
+                kv = torch.stack(memory, dim=1).reshape(B, -1, self.d_enc)
+                kv_tau = torch.stack(times, dim=1)                        # (B, k)
             else:
                 kv = memory[-1]
+                kv_tau = times[-1].unsqueeze(1)                           # (B, 1)
             kv = self.decoder_embed(kv)
+            kv_coords = self._coords(kv_tau, P).reshape(B, -1, 3)
+            q_coords = self._coords(tau, P)
 
-            gap_s = gaps[s].expand(B)
-            q = self._build_queries(B, P, gap_s, device, dtype)
-            step = self.repr_head(self.decoder(q, kv, None))      # (B, 1+P, D)
+            q = self._build_queries(B, P, dtype)
+            step = self.repr_head(self.decoder(
+                q, kv, None,
+                q_pos=self._rope(q_coords, hd), kv_pos=self._rope(kv_coords, hd),
+            ))
             preds.append(step)
 
-            out, state = self.core(step, state)                   # feed prediction back
+            # feed the prediction back, with its own timestamp
+            prev_tau = times[-1]
+            hdc = self.core.head_dim
+            out, state = self.core(
+                step, state,
+                self._rope(self._coords(tau, P), hdc),
+                self._rope(self._coords(prev_tau, P), hdc),
+            )
             memory.append(out)
+            times.append(tau)
 
         return torch.stack(preds, dim=1)
 
     @torch.no_grad()
-    def step(self, frame: torch.Tensor, state: Optional[torch.Tensor] = None):
+    def step(
+        self,
+        frame: torch.Tensor,                       # (B, 3, H, W)
+        state: Optional[torch.Tensor] = None,
+        t_now: Optional[torch.Tensor] = None,      # (B,) absolute time
+        t_prev: Optional[torch.Tensor] = None,     # (B,) time of the state
+    ):
         """Streaming: one frame in, (features, new_state) out."""
         tokens = self.encode(frame)
+        B, n_tok = tokens.shape[0], tokens.shape[1]
+        P = n_tok if self.drop_cls else n_tok - 1
         if state is None:
             state = tokens.new_zeros(tokens.shape)
-        return self.core(tokens, state)
-
-
-
-if __name__ == "__main__":
-    torch.manual_seed(0)
-
-    model = RecurrentWorldModel(
-        encoder_name="facebook/dinov2-small",
-        freeze_encoder=True,
-        context_mode="full",
-        dec_layers=2,
-    )
-
-    B, N = 2, 6
-    frames = torch.randn(B, N, 3, 224, 224)
-    times = sample_frame_times(B, N, gap_min=1.0, gap_max=12.0)
-    target_idx = torch.tensor([3, 4, 5])
-
-    out = model(frames, target_idx, times)
-    print({k: tuple(v.shape) for k, v in out.items() if torch.is_tensor(v)})
-    print("loss:", model.loss(out).item())
-
-    roll = model.rollout(frames[:, :3], gaps=[4.0, 4.0, 8.0])
-    print("rollout:", tuple(roll.shape))
-
-    # causality check: perturbing a frame at or after the earliest target must
-    # not change that target's prediction; perturbing an earlier one must.
-    m2 = RecurrentWorldModel(
-        encoder_name="facebook/dinov2-small",
-        freeze_encoder=True, context_mode="full", dec_layers=2,
-    ).eval()
-    f2 = frames.clone()
-    f2[:, 4] = torch.randn_like(f2[:, 4])          # frame 4 >= target 3
-    a = m2(frames, torch.tensor([3]), times)["pred"]
-    b = m2(f2, torch.tensor([3]), times)["pred"]
-    print("no leak from frame>=target:", torch.allclose(a, b, atol=1e-5))
-
-    f3 = frames.clone()
-    f3[:, 1] = torch.randn_like(f3[:, 1])          # frame 1 < target 3
-    c = m2(f3, torch.tensor([3]), times)["pred"]
-    print("does depend on history:", not torch.allclose(a, c, atol=1e-5))
+        if t_now is None:
+            t_now = tokens.new_zeros(B)
+        if t_prev is None:
+            t_prev = t_now
+        hd = self.core.head_dim
+        return self.core(
+            tokens, state,
+            self._rope(self._coords(t_now.to(tokens.device), P), hd),
+            self._rope(self._coords(t_prev.to(tokens.device), P), hd),
+        )
