@@ -4,6 +4,7 @@ import contextlib
 import copy
 import math
 from typing import Optional, Sequence, Tuple
+from icecream import ic
 
 import torch
 import torch.nn as nn
@@ -100,6 +101,7 @@ class RecurrentWorldModel(nn.Module):
 
         self.d_enc = encoder.config.hidden_size
         self.patch = encoder.config.patch_size
+        # self.num_register_tokens = encoder.config.num_register_tokens 
         self.dec_dim = dec_dim
         self.freeze_encoder = freeze_encoder
         self.context_mode = context_mode
@@ -175,6 +177,7 @@ class RecurrentWorldModel(nn.Module):
         buffer it does not mutate module state, so it is compile- and
         DDP-friendly.
         """
+        # ic(P)
         g = int(round(math.sqrt(P)))
         assert g * g == P, f"{P} patch tokens is not a square grid"
         lin = torch.linspace(-1.0, 1.0, g, device=device, dtype=torch.float32)
@@ -234,6 +237,7 @@ class RecurrentWorldModel(nn.Module):
 
         feats = self.encode(frames.reshape(B * N, *img))           # (B*N, n_tok, D)
         feats = feats.view(B, N, *feats.shape[1:])                 # (B, N, n_tok, D)
+        # ic(feats.shape)
         n_tok = feats.shape[2]
         P = n_tok if self.drop_cls else n_tok - 1
         dtype = feats.dtype

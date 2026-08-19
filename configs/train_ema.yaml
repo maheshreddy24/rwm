@@ -2,6 +2,7 @@ seed: 42
 
 model:
   encoder_name: facebook/dinov2-small
+  # encoder_name: facebook/dinov2-with-registers-small
   core_layers: 4
   core_heads: 8
   dec_dim: 512
@@ -9,10 +10,10 @@ model:
   dec_heads: 16
   dec_mlp: 768
   # mask_ratio: 0.95
-  mask_ratio: 1
-  max_delta: 64
-  freeze_encoder: True
-  checkpoint_core: false
+  # mask_ratio: 1
+  # max_delta: 64
+  # freeze_encoder: True
+  # checkpoint_core: false
 
 dataset:
   train:
@@ -31,18 +32,19 @@ dataset:
     frame_size: [256, 256]
 
 dataloader:
-  batch_size: 160
+  batch_size: 32
   num_workers: 15
   pin_memory: true
   prefetch_factor: 4
 
 trainer:
-  checkpoint_dir: checkpoints/checkpoints_small_dec_masked
+  checkpoint_dir: checkpoints/checkpoints_rwm
   lr: 1.5e-4          # recurrent core + decoder + repr_head
   weight_decay: 0.05
   betas: [0.9, 0.95]
   eps: 1e-8
   grad_clip_norm: 1.0
+  min_context: 10 # rwm
 
   num_epochs: 8
   warmup_ratio: 0.05
