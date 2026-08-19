@@ -2,7 +2,7 @@ nodes: 1
 tasks_per_node: 8
 tag: default
 eval_name: intphys2
-folder: /checkpoint/vjepa-2-1-giant/
+folder: /home/rvm/evals/intphy2/IntPhys2/checkpoint/vjepa2_1/
 resume_checkpoint: false
 experiment:
   data:
@@ -17,7 +17,7 @@ experiment:
     dataset: intphys2-debug
   max_context_mode: true
 model_kwargs:
-  checkpoint: /checkpoint/vjepa-2-1-giant/vjepa2_1_vitg_384.pt 
+  checkpoint: /home/rvm/evals/intphy2/IntPhys2/checkpoint/vjepa2_1/vjepa2_1_vitg_384.pt 
   module_name: app.vjepa2_1.modelcustom.default_wrapper
   wrapper_kwargs: {}
   pretrain_kwargs:
