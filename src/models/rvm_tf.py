@@ -143,6 +143,7 @@ class RecurrentWorldModel(nn.Module):
     def _maybe_drop_cls(self, tokens: torch.Tensor) -> torch.Tensor:
         return tokens[..., 1:, :] if self.drop_cls else tokens
 
+    @torch.no_grad()
     def encode(self, frames: torch.Tensor) -> torch.Tensor:
         """(M, 3, H, W) -> (M, 1+P, D) through the online encoder."""
         ctx = torch.no_grad() if self.freeze_encoder else contextlib.nullcontext()
@@ -150,23 +151,25 @@ class RecurrentWorldModel(nn.Module):
             h = self.encoder.encoder(self.encoder.embeddings(frames)).last_hidden_state
             return self._maybe_drop_cls(self.encoder.layernorm(h))
 
-    @torch.no_grad()
-    def encode_target(self, frames: torch.Tensor) -> torch.Tensor:
-        """Detached features used as the regression target."""
-        enc = self.target_encoder if self.use_ema else self.encoder
-        h = enc.encoder(enc.embeddings(frames)).last_hidden_state
-        return self._maybe_drop_cls(enc.layernorm(h))
+    #! we are not using it 
+    # @torch.no_grad()
+    # def encode_target(self, frames: torch.Tensor) -> torch.Tensor:
+    #     """Detached features used as the regression target."""
+    #     enc = self.target_encoder if self.use_ema else self.encoder
+    #     h = enc.encoder(enc.embeddings(frames)).last_hidden_state
+    #     return self._maybe_drop_cls(enc.layernorm(h))
 
-    @torch.no_grad()
-    def update_ema(self, momentum: Optional[float] = None) -> None:
-        """Call once per optimizer step when use_ema=True."""
-        if not self.use_ema:
-            return
-        m = self.ema_momentum if momentum is None else momentum
-        for pt, ps in zip(self.target_encoder.parameters(), self.encoder.parameters()):
-            pt.mul_(m).add_(ps.detach(), alpha=1.0 - m)
-        for bt, bs in zip(self.target_encoder.buffers(), self.encoder.buffers()):
-            bt.copy_(bs)
+    #! we use frozen encoder os ideally not usefull 
+    # @torch.no_grad()
+    # def update_ema(self, momentum: Optional[float] = None) -> None:
+    #     """Call once per optimizer step when use_ema=True."""
+    #     if not self.use_ema:
+    #         return
+    #     m = self.ema_momentum if momentum is None else momentum
+    #     for pt, ps in zip(self.target_encoder.parameters(), self.encoder.parameters()):
+    #         pt.mul_(m).add_(ps.detach(), alpha=1.0 - m)
+    #     for bt, bs in zip(self.target_encoder.buffers(), self.encoder.buffers()):
+    #         bt.copy_(bs)
 
     # coordinates
 
@@ -253,8 +256,8 @@ class RecurrentWorldModel(nn.Module):
         hd = self.decoder.head_dim
         if self.context_mode == "full":
             L = N * n_tok
-            kv = self.decoder_embed(memory.reshape(B, L, self.d_enc))
-            kv = kv.unsqueeze(1).expand(B, Tt, L, self.dec_dim).reshape(B * Tt, L, self.dec_dim)
+            kv = self.decoder_embed(memory.reshape(B, L, self.d_enc))  # bs, t, num_p, emb_d --> bs, t * num_p, emb_d
+            kv = kv.unsqueeze(1).expand(B, Tt, L, self.dec_dim).reshape(B * Tt, L, self.dec_dim) 
 
             # memory[:, t] summarizes everything up to and including frame t,
             # so it is tagged with tau_t.
