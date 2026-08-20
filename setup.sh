@@ -16,12 +16,12 @@ conda activate "${ENV_NAME}"
 echo "Installing PyTorch..."
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
-echo "Installing Python requirements recursively..."
+# echo "Installing Python requirements recursively..."
 
-find . -type f -name "requirements.txt" | while read -r req_file; do
-    echo "Installing from: ${req_file}"
-    pip install -r "${req_file}"
-done
+# find . -type f -name "requirements.txt" | while read -r req_file; do
+#     echo "Installing from: ${req_file}"
+#     pip install -r "${req_file}"
+# done
 
 echo "Done!"
 

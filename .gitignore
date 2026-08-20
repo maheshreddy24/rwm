@@ -7,6 +7,15 @@ k700_train_361.tar.gz
 evals/intphy2/IntPhys2/prediction_evals/datasets
 evals/intphy2/IntPhys2/checkpoint
 
+*webm
+*.mp4
+
+*.zip
+
+/datasets/IntPhy2.zip
+/videos
+/Heldout
+/Debu
 */ssv2/*
 20bn*
 evals/pusht
@@ -34,3 +43,4 @@ wandb
 
 local_tests.ipynb
 *.txt
+datasets/IntPhys2.zip
