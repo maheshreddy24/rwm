@@ -8,10 +8,10 @@ current_dir = Path(__file__).resolve().parent
 sys.path.append(str(current_dir))
 
 import os
-from models_vj2.vision_transformer import vit_encoder
+from models_vj2 import vision_transformer as vit_encoder
 import torch
 
-from models_vj2.predictor import vit_predictor
+from models_vj2 import predictor as vit_predictor
 
 vjepa2_1_teacher_embed_dim = 1664
 

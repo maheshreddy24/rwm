@@ -10,10 +10,10 @@ from functools import partial
 import torch
 import torch.nn as nn
 
-from src.models.utils.mask_utils import apply_masks
-from src.models.utils.tensor_utils import repeat_interleave_batch, trunc_normal_
+from models_vj2.utils.mask_utils import apply_masks
+from models_vj2.utils.tensor_utils import repeat_interleave_batch, trunc_normal_
 
-from src.models.utils.modules import Block
+from models_vj2.utils.modules import Block
 
 
 class VisionTransformerPredictor(nn.Module):

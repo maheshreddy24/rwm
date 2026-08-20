@@ -10,11 +10,11 @@ from functools import partial
 import torch
 import torch.nn as nn
 
-from make_model_vj2_1.utils.mask_utils import apply_masks
-from make_model_vj2_1.utils.tensor_utils import trunc_normal_
+from models_vj2.utils.mask_utils import apply_masks
+from models_vj2.utils.tensor_utils import trunc_normal_
 
-from make_model_vj2_1.utils.modules import Block
-from make_model_vj2_1.utils.patch_embed import PatchEmbed, PatchEmbed3D
+from models_vj2.utils.modules import Block
+from models_vj2.utils.patch_embed import PatchEmbed, PatchEmbed3D
 
 
 class VisionTransformer(nn.Module):
