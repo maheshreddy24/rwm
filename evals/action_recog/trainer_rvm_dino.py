@@ -29,7 +29,8 @@ from icecream import ic
 from tqdm import tqdm
 
 from models.readout_head import Readout
-from models.rvm_torch import RVM
+# from models.rvm_torch import RVM
+from models.rvm_tf import RecurrentWorldModel
 from ssv2_inf_dataset import SSv2
 
 # RVM_CONFIG_PATH = os.path.join(
@@ -117,7 +118,7 @@ class TrainConfig:
     eval_interval: int = 1     # in epochs
     checkpoint_dir: str = "checkpoints_ssv2_acr_rvm_dino"
 
-    wandb_project: str = "rvm-dino-action-recog"
+    wandb_project: str = "rwm-action-recog"
     wandb_name: str = "ssv2-readout"
 
     readout_in_dim: int = 384 # dino embedding dim varies acc to the variant. 
@@ -172,7 +173,8 @@ class Trainer:
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         self.logger = get_logger(os.path.join(self.checkpoint_dir, "training.log"))
 
-        self.rd_encoder = RVM(**load_rvm_model_config())
+        # self.rd_encoder = RVM(**load_rvm_model_config())
+        self.rd_encoder = RWM(**load_rvm_model_config())
         if self.config.rvm_weights_path:
             state_dict = torch.load(self.config.rvm_weights_path, map_location="cpu")
             self.rd_encoder.load_state_dict(state_dict['model'])
@@ -223,6 +225,15 @@ class Trainer:
 
         return output["memory"][..., 1:, :]  # (B, T, N, 384), CLS token dropped
         # return output['dino_feat'] # bs, t, n, c
+
+    def _extract_representation_rwm(self, frames: torch.Tensor) -> torch.Tensor:
+        bs, t, c, h, w = frames.shape
+        source = frames.to(self.device)
+
+        with torch.no_grad(), torch.amp.autocast(device_type=self.device_type, enabled=self.config.amp):
+            output = self.rd_encoder.extract_representations(source)
+
+        return output[..., 1:, :]  # (B, T, N, 384), CLS token dropped
 
 
     def init_optim(self):
@@ -295,7 +306,11 @@ class Trainer:
                 desc=f"Epoch {epoch}",
                 leave=False,
             ):
-                representation = self._extract_representation(
+                # representation = self._extract_representation(
+                #     frames
+                # ).to(self.device)
+
+                representation = self._extract_representation_rwm(
                     frames
                 ).to(self.device)
                 labels = labels.to(self.device)
