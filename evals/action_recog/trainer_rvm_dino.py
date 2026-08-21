@@ -174,7 +174,7 @@ class Trainer:
         self.logger = get_logger(os.path.join(self.checkpoint_dir, "training.log"))
 
         # self.rd_encoder = RVM(**load_rvm_model_config())
-        self.rd_encoder = RWM(**load_rvm_model_config())
+        self.rd_encoder = RecurrentWorldModel(**load_rvm_model_config())
         if self.config.rvm_weights_path:
             state_dict = torch.load(self.config.rvm_weights_path, map_location="cpu")
             self.rd_encoder.load_state_dict(state_dict['model'])
@@ -382,8 +382,12 @@ class Trainer:
         total_samples = 0
 
         for frames, labels in tqdm(self.eval_loader, desc="Eval", leave=False):
-            representation = self._extract_representation(
-                frames # bs, t, c, h, w
+            # representation = self._extract_representation(
+            #     frames # bs, t, c, h, w
+            # ).to(self.device)
+
+            representation = self._extract_representation_rwm(
+                frames
             ).to(self.device)
             labels = labels.to(self.device)
 
