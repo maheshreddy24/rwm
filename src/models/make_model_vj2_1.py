@@ -146,5 +146,18 @@ def vjepa2_1_vit_giant_384(model_name, pretrained: bool = True, **kwargs):
     )
 
 
+
+def vjepa2_1_vit_gigantic_384(model_name, pretrained: bool = True, **kwargs):
+    return _make_vjepa2_1_model(
+        model_name=model_name,
+        arch_name="vit_gigantic_xformers",
+        img_size=384,
+        predictor_num_mask_tokens=8,
+        n_output_distillation=4,
+        return_all_tokens=True,
+        pretrained=pretrained,
+        **kwargs,
+    )
+    
 if __name__ == "__main__":
     vjepa2_1_vit_base_384()
