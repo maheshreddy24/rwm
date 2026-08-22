@@ -63,6 +63,11 @@ class Trainer:
         self.device = self.config.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = model.to(self.device)
+        # RecurrentWorldModel computes its own loss inside forward(), so the
+        # trainer-level flag only takes effect if pushed onto the model here;
+        # the older RVM path reads it straight off self.config in
+        # _teacher_representation instead.
+        self.model.normalize_target = bool(self.config.get("normalize_target", False))
         self.min_context = self.config.get("min_context", 10)
         print(f"Device used is {self.device} ===========================")
 

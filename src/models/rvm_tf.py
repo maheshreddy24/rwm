@@ -68,12 +68,21 @@ class RecurrentWorldModel(nn.Module):
         rope_space_periods: periods in normalized grid units. Range is 2.0
                         edge-to-edge, one patch is 2/grid, so ~(0.2, 4.0)
                         covers neighbour-level to whole-image structure.
+        normalize_target: layer-norm each target token (over D) before the
+                        MSE. Without it, a handful of high-norm tokens --
+                        CLS, and register-less DINOv2's high-norm artifact
+                        patches -- dominate the mean over all tokens, since
+                        F.mse_loss averages raw squared error across every
+                        token indiscriminately. Per-token layer-norm puts
+                        every token on the same scale before the loss sees
+                        it; `pred` needs no matching treatment since
+                        `repr_head` is free to learn output at that scale.
     """
 
     def __init__(
         self,
         encoder: Optional[nn.Module] = None,
-        encoder_name: str = "facebook/dinov2-small",
+        encoder_name: str = "facebook/dinov2-with-registers-small",
         core_layers: int = 4,
         core_heads: int = 8,
         core_mlp: Optional[int] = None,
@@ -90,6 +99,7 @@ class RecurrentWorldModel(nn.Module):
         rope_time_periods: Tuple[float, float] = (1.0, 200.0),
         rope_space_periods: Tuple[float, float] = (0.2, 4.0),
         drop_cls: bool = False,
+        normalize_target: bool = False,
     ):
         super().__init__()
         assert context_mode in ("full", "state")
@@ -101,7 +111,8 @@ class RecurrentWorldModel(nn.Module):
 
         self.d_enc = encoder.config.hidden_size
         self.patch = encoder.config.patch_size
-        # self.num_register_tokens = encoder.config.num_register_tokens 
+        # 0 for encoders without registers (e.g. plain dinov2-small).
+        self.num_register_tokens = getattr(encoder.config, "num_register_tokens", 0)
         self.dec_dim = dec_dim
         self.freeze_encoder = freeze_encoder
         self.context_mode = context_mode
@@ -111,6 +122,7 @@ class RecurrentWorldModel(nn.Module):
         self.t_periods = rope_time_periods
         self.s_periods = rope_space_periods
         self.drop_cls = drop_cls
+        self.normalize_target = normalize_target
 
         if freeze_encoder:
             for p in self.encoder.parameters():
@@ -143,12 +155,25 @@ class RecurrentWorldModel(nn.Module):
     def _maybe_drop_cls(self, tokens: torch.Tensor) -> torch.Tensor:
         return tokens[..., 1:, :] if self.drop_cls else tokens
 
+    def _drop_registers(self, tokens: torch.Tensor) -> torch.Tensor:
+        """HF layout is [CLS, reg_0 .. reg_{R-1}, patch_0 ..]; registers carry
+        no spatial position and exist only to soak up the high-norm artifact
+        behaviour a register-less DINOv2 dumps into ordinary patch tokens
+        (Darcet et al., 2023). Drop them right here so every downstream
+        consumer -- core, decoder, loss -- sees the same [CLS, patch_0 ..]
+        layout regardless of which encoder variant is loaded."""
+        r = self.num_register_tokens
+        if r == 0:
+            return tokens
+        return torch.cat([tokens[..., :1, :], tokens[..., 1 + r:, :]], dim=-2)
+
     @torch.no_grad()
     def encode(self, frames: torch.Tensor) -> torch.Tensor:
         """(M, 3, H, W) -> (M, 1+P, D) through the online encoder."""
         ctx = torch.no_grad() if self.freeze_encoder else contextlib.nullcontext()
         with ctx:
             h = self.encoder.encoder(self.encoder.embeddings(frames)).last_hidden_state
+            h = self._drop_registers(h)
             return self._maybe_drop_cls(self.encoder.layernorm(h))
 
     #! we are not using it 
@@ -309,7 +334,10 @@ class RecurrentWorldModel(nn.Module):
 
     def loss(self, pred: torch.Tensor, target: torch.Tensor, target_idx: torch.Tensor) -> torch.Tensor:
         """target is `feats` (B, N, n_tok, D); pick out the frames pred was built for."""
-        return F.mse_loss(pred, target[:, target_idx, ...].detach())
+        tgt = target[:, target_idx, ...].detach()
+        if self.normalize_target:
+            tgt = F.layer_norm(tgt, tgt.shape[-1:])
+        return F.mse_loss(pred, tgt)
 
 
     @torch.no_grad()
