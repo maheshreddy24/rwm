@@ -24,6 +24,7 @@ class ClipWindow:
     start: int
     end: int
     source: str
+    label: int = -1
 
     @property
     def length(self) -> int:
@@ -34,32 +35,44 @@ class RVMDataset(Dataset):
     """Samples a rolled-out clip of frames for `RecurrentWorldModel.forward`.
 
     Config:
-        datasets:                     list of source specs (see below)
-        roll_out:                     frames per clip, V-JEPA 2.1 style (default 16)
-        max_stride:                   max frasme stride between sampled frames (default 3)
-        min_duration_frames:          windows shorter than this are dropped (default 48)
-        frame_size:                   (H, W) to resize decoded frames to, default (256, 256)
+        manifest:              csv from build_manifest.py
+                               (path,label,num_frames,fps,duration_sec,source)
+        sources:               per-source windowing rules, keyed by the manifest's
+                               `source` column:
+                                   mode:            "single"  -> one window per video
+                                                    "segment" -> one window per chunk
+                                   segment_seconds: chunk length for "segment" (default 180)
+                                   max_windows:     optional cap on windows per video
+                                   weight:          sampling weight for make_weighted_sampler
+                               unlisted sources fall back to `default_source`
+        default_source:        rules for any source not in `sources` (default: single, w=1)
+        roll_out:              frames per clip, V-JEPA 2.1 style (default 16)
+        max_stride:            max frame stride between sampled frames (default 3)
+        min_duration_frames:   windows shorter than this are dropped (default 48)
+        frame_size:            (H, W) to resize decoded frames to, default (256, 256)
+        deterministic:         eval mode - center crop, no flip, fixed stride, window
+                               center start. Set True for the test manifest.
 
-    Each entry of `datasets` is:
-        name:              tag carried through to the batch
-        manifest:          csv from build_manifest.py (path,num_frames,fps,duration,source)
-        mode:              "single"  -> one window spanning the whole video (ssv2 / kinetics)
-                           "segment" -> one window per `segment_seconds` chunk (ego4d)
-        segment_seconds:   chunk length for mode="segment" (default 180 = 3 min)
-        max_windows:       optional cap on windows per video, evenly spread
-        weight:            optional sampling weight, used by make_weighted_sampler
-
-    Video lengths are read from the manifest, so __init__ never opens a video. A clip
-    is `roll_out` frames spaced by a random stride in [1, max_stride], starting at a
+    Video lengths come from the manifest, so __init__ never opens a video. A clip is
+    `roll_out` frames spaced by a random stride in [1, max_stride], starting at a
     random offset *inside its window*. One RandomResizedCrop + optional hflip is drawn
     per clip and shared across frames, so the crop doesn't jitter.
     """
 
-    def __init__(self, config):
+    DEFAULT_SOURCE = {"mode": "single", "weight": 1.0}
+
+    def __init__(self, config, manifest=None, deterministic=None):
+        self.manifest_path = manifest or config["manifest"]
         self.roll_out = config.get("roll_out", 16)  # inspired from V-JEPA 2.1
         self.max_stride = config.get("max_stride", 3)  # 12 fps, 3 stride --> 3 * 16 = 48
         self.min_duration = config.get("min_duration_frames", 48)
         self.frame_size = tuple(config.get("frame_size", FRAME_SIZE))
+        self.deterministic = (
+            config.get("deterministic", False) if deterministic is None else deterministic
+        )
+
+        self.sources = config.get("sources", {}) or {}
+        self.default_source = config.get("default_source", self.DEFAULT_SOURCE)
 
         # A window must be long enough to hold one stride-1 clip.
         self.min_window = max(self.min_duration, self.roll_out)
@@ -67,22 +80,10 @@ class RVMDataset(Dataset):
         # rng is created lazily so each dataloader worker gets a distinct stream.
         self._rng = None
 
-        specs = config.get("datasets")
-        if specs is None:  # backwards compat with the old single-csv config
-            specs = [{"name": "default", "manifest": config["video_csv"], "mode": "single"}]
-
         self.windows: list[ClipWindow] = []
-        self.source_weights: dict[str, float] = {}
-        for spec in specs:
-            name = spec.get("name", os.path.basename(spec["manifest"]))
-            self.source_weights[name] = float(spec.get("weight", 1.0))
-            before = len(self.windows)
-            self.windows.extend(self._windows_for_spec(spec, name))
-            n_new = len(self.windows) - before
-            print(f"[RVMDataset] {name}: {n_new} windows (mode={spec.get('mode', 'single')})")
+        self._build_index()
 
-        print(f"[RVMDataset] {len(self.windows)} windows total.")
-
+    # ------------------------------------------------------------------ index
 
     @property
     def rng(self):
@@ -91,40 +92,71 @@ class RVMDataset(Dataset):
             self._rng = np.random.default_rng(torch.initial_seed() % (2**32))
         return self._rng
 
-    def _windows_for_spec(self, spec, name):
-        mode = spec.get("mode", "single")
-        segment_seconds = float(spec.get("segment_seconds", 180.0))
-        max_windows = spec.get("max_windows")
+    def _rules_for(self, source):
+        return {**self.DEFAULT_SOURCE, **self.default_source, **self.sources.get(source, {})}
 
-        windows = []
-        with open(spec["manifest"], newline="", encoding="utf-8") as f:
+    def _build_index(self):
+        stats = {}
+        with open(self.manifest_path, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 path = row["path"].strip()
                 if not path:
                     continue
-                num_frames = int(row["num_frames"])
+                source = (row.get("source") or "default").strip()
+                num_frames = int(float(row["num_frames"]))
                 fps = float(row.get("fps") or 0.0)
+                try:
+                    label = int(float(row.get("label", -1)))
+                except (TypeError, ValueError):
+                    label = -1
+
+                entry = stats.setdefault(source, {"videos": 0, "skipped": 0, "windows": 0})
                 if num_frames < self.min_window:
+                    entry["skipped"] += 1
                     continue
+                entry["videos"] += 1
 
-                if mode == "single":
-                    windows.append(ClipWindow(path, 0, num_frames, name))
-                    continue
+                rules = self._rules_for(source)
+                before = len(self.windows)
 
-                # mode == "segment": chunk the video into equal windows.
-                seg = int(round(segment_seconds * fps)) if fps > 0 else num_frames
-                seg = max(seg, self.min_window)
-                n_seg = max(1, num_frames // seg)
-                if max_windows:
-                    n_seg = min(n_seg, int(max_windows))
+                if rules["mode"] == "segment":
+                    seconds = float(rules.get("segment_seconds", 180.0))
+                    seg = int(round(seconds * fps)) if fps > 0 else num_frames
+                    seg = max(seg, self.min_window)
+                    n_seg = max(1, num_frames // seg)
+                    if rules.get("max_windows"):
+                        n_seg = min(n_seg, int(rules["max_windows"]))
+                    # Spread evenly so the tail is absorbed rather than orphaned.
+                    bounds = np.linspace(0, num_frames, n_seg + 1).round().astype(int)
+                    for start, end in zip(bounds[:-1], bounds[1:]):
+                        if end - start >= self.min_window:
+                            self.windows.append(
+                                ClipWindow(path, int(start), int(end), source, label)
+                            )
+                else:
+                    self.windows.append(ClipWindow(path, 0, num_frames, source, label))
 
-                # Spread windows evenly so the tail is absorbed rather than dropped.
-                bounds = np.linspace(0, num_frames, n_seg + 1).round().astype(int)
-                for start, end in zip(bounds[:-1], bounds[1:]):
-                    if end - start >= self.min_window:
-                        windows.append(ClipWindow(path, int(start), int(end), name))
-        return windows
+                entry["windows"] += len(self.windows) - before
 
+        name = os.path.basename(self.manifest_path)
+        mode_tag = "eval" if self.deterministic else "train"
+        print(f"[RVMDataset] {name} ({mode_tag})")
+        for source in sorted(stats):
+            rules = self._rules_for(source)
+            entry = stats[source]
+            extra = (
+                f" @{rules.get('segment_seconds', 180)}s"
+                if rules["mode"] == "segment"
+                else ""
+            )
+            print(
+                f"  {source:12s} {entry['videos']:7d} videos -> "
+                f"{entry['windows']:8d} windows  ({rules['mode']}{extra}, "
+                f"{entry['skipped']} too short)"
+            )
+        print(f"  {'TOTAL':12s} {len(self.windows):8d} windows")
+
+    # ------------------------------------------------------------------ video
 
     def _open_video(self, fname):
         if not os.path.exists(fname):
@@ -142,16 +174,25 @@ class RVMDataset(Dataset):
         if available < self.roll_out:
             return None
 
-        stride = int(self.rng.integers(1, self.max_stride + 1))
+        if self.deterministic:
+            stride = self.max_stride
+        else:
+            stride = int(self.rng.integers(1, self.max_stride + 1))
+
         span = (self.roll_out - 1) * stride
         if span >= available:
             stride = max(1, (available - 1) // (self.roll_out - 1))
             span = (self.roll_out - 1) * stride
 
-        start = win_start + int(self.rng.integers(0, available - span))
-        indices = start + np.arange(self.roll_out) * stride
+        if self.deterministic:
+            offset = (available - span) // 2  # window center
+        else:
+            offset = int(self.rng.integers(0, available - span))
+
+        indices = win_start + offset + np.arange(self.roll_out) * stride
         return np.clip(indices, 0, total_frames - 1)
 
+    # ------------------------------------------------------------- augmentation
 
     def _random_resized_crop_params(self, height: int, width: int):
         area = height * width
@@ -167,6 +208,9 @@ class RVMDataset(Dataset):
                 return top, left, h, w
 
         # Fallback: center crop clamped to the ratio bounds.
+        return self._center_crop_params(height, width)
+
+    def _center_crop_params(self, height: int, width: int):
         in_ratio = width / height
         if in_ratio < min(RRC_RATIO):
             w = width
@@ -184,8 +228,12 @@ class RVMDataset(Dataset):
         """Apply one shared RandomResizedCrop + optional hflip across all frames.
         buffer: [T, H, W, 3] uint8 -> [T, *frame_size, 3] uint8."""
         T, H, W, _ = buffer.shape
-        top, left, crop_h, crop_w = self._random_resized_crop_params(H, W)
-        do_flip = self.rng.random() < 0.5
+        if self.deterministic:
+            top, left, crop_h, crop_w = self._center_crop_params(H, W)
+            do_flip = False
+        else:
+            top, left, crop_h, crop_w = self._random_resized_crop_params(H, W)
+            do_flip = self.rng.random() < 0.5
 
         out = np.empty((T, self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
         for t in range(T):
@@ -226,6 +274,7 @@ class RVMDataset(Dataset):
 
         return frames, torch.from_numpy(sampled_indices.astype(np.int64))
 
+    # ------------------------------------------------------------------ dunder
 
     def __getitem__(self, index):
         # Try up to 20 times to find a valid sample.
@@ -239,6 +288,7 @@ class RVMDataset(Dataset):
                     "context": context,
                     "sampled_indices": sampled_indices,
                     "source": window.source,
+                    "label": window.label,
                 }
 
             index = int(self.rng.integers(len(self)))
@@ -259,16 +309,19 @@ class RVMDataset(Dataset):
             "context": context,
             "sampled_indices": sampled_indices,
             "source": "dummy",
+            "label": -1,
         }
 
     def __len__(self):
         return len(self.windows)
 
+    # ------------------------------------------------------------------ helpers
+
     def make_weighted_sampler(self, num_samples=None):
         """Balance sources so Ego4D's many windows don't drown out ssv2/kinetics.
 
-        Per-source weight is `spec.weight / n_windows_in_source`, so each source's
-        total mass equals its configured weight.
+        Per-window weight is `source_weight / n_windows_in_source`, so each source's
+        total probability mass equals its configured weight.
         """
         from torch.utils.data import WeightedRandomSampler
 
@@ -277,7 +330,7 @@ class RVMDataset(Dataset):
             counts[window.source] = counts.get(window.source, 0) + 1
         weights = torch.tensor(
             [
-                self.source_weights.get(w.source, 1.0) / counts[w.source]
+                float(self._rules_for(w.source)["weight"]) / counts[w.source]
                 for w in self.windows
             ],
             dtype=torch.double,
@@ -292,6 +345,7 @@ class RVMDataset(Dataset):
             "context": torch.stack([item["context"] for item in batch], dim=0),         # [B, roll_out, C, H, W]
             "sampled_indices": torch.stack([item["sampled_indices"] for item in batch], dim=0),  # [B, roll_out]
             "source": [item["source"] for item in batch],
+            "label": torch.tensor([item["label"] for item in batch], dtype=torch.long),  # [B], -1 = unlabelled
         }
 
 
@@ -300,11 +354,13 @@ if __name__ == "__main__":
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
-    dataset = RVMDataset(config)
+    train_set = RVMDataset(config, manifest=config["train_manifest"], deterministic=False)
+    test_set = RVMDataset(config, manifest=config["test_manifest"], deterministic=True)
+
     loader = torch.utils.data.DataLoader(
-        dataset,
+        train_set,
         batch_size=2,
-        sampler=dataset.make_weighted_sampler(),
+        sampler=train_set.make_weighted_sampler(),
         num_workers=2,
         collate_fn=RVMDataset.collate_fn,
     )

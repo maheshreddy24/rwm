@@ -1,7 +1,27 @@
-num_source_frames: 4
-num_target_frames: 4
-max_delta: 48
+train_manifest: /home/rvm/datasets/train_manifest.csv
+test_manifest: /home/rvm/datasets/test_manifest.csv
+
+roll_out: 16
+max_stride: 3
+min_duration_frames: 48
 frame_size: [256, 256]
-min_duration_sec: 4
-train_csv: /home/rvm/datasets/train_dataset_ssv2_kine.csv 
-val_csv: /home/rvm/datasets/test_dataset_ssv2_kine.csv
+
+# Keyed by the `source` column in the manifest. Match the strings your
+# train_ssv2_kine.csv actually uses.
+sources:
+  ssv2:
+    mode: single
+    weight: 1.0
+  kinetics:
+    mode: single
+    weight: 1.0
+  ego4d:
+    mode: segment
+    segment_seconds: 180
+    weight: 1.0
+    # max_windows: 40   # optional cap per video
+
+# Anything not listed above.
+default_source:
+  mode: single
+  weight: 1.0

@@ -1,0 +1,14 @@
+
+wrote 240932 rows -> /data/train_manifest.csv
+  ego4d           1666 clips      436.1 h   dur  182.2/  942.3/  1797.3s (min/mean/max)
+  kinetics       70353 clips      187.8 h   dur    0.4/    9.6/    10.2s (min/mean/max)
+  ssv2          168913 clips      174.6 h   dur    0.5/    3.7/     9.9s (min/mean/max)
+  TOTAL         240932 clips      798.5 h
+
+
+
+wrote 32783 rows -> /data/test_manifest.csv
+ego4d            185 clips       50.1 h   dur  182.8/  975.0/  1799.8s (min/mean/max)
+kinetics        7821 clips       20.9 h   dur    0.9/    9.6/    10.1s (min/mean/max)
+ssv2           24777 clips       27.6 h   dur    0.4/    4.0/    11.8s (min/mean/max)
+TOTAL          32783 clips       98.6 h
