@@ -1,5 +1,6 @@
 import csv
 import os
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -15,40 +16,115 @@ RRC_SCALE = (0.3, 1.0)
 RRC_RATIO = (0.75, 1.25)
 
 
+@dataclass(slots=True)
+class ClipWindow:
+    """One sampleable region of one video. `start`/`end` are frame indices, end exclusive."""
+
+    path: str
+    start: int
+    end: int
+    source: str
+
+    @property
+    def length(self) -> int:
+        return self.end - self.start
+
+
 class RVMDataset(Dataset):
     """Samples a rolled-out clip of frames for `RecurrentWorldModel.forward`.
 
-    Config keys:
-        video_csv:            path to a csv with a `path` column (extra columns ignored)
-        roll_out:              frames per clip, V-JEPA 2.1 style (default 16)
-        max_stride:            max frame stride between consecutive sampled frames (default 3)
-        min_duration_frames:   videos with fewer frames than this are skipped (default 48)
-        frame_size:            (H, W) to resize decoded frames to, default (256, 256)
+    Config:
+        datasets:                     list of source specs (see below)
+        roll_out:                     frames per clip, V-JEPA 2.1 style (default 16)
+        max_stride:                   max frasme stride between sampled frames (default 3)
+        min_duration_frames:          windows shorter than this are dropped (default 48)
+        frame_size:                   (H, W) to resize decoded frames to, default (256, 256)
 
-    A clip is `roll_out` frames spaced by a random stride in [1, max_stride], starting
-    at a random offset. A single RandomResizedCrop + optional horizontal flip is applied
-    per-clip, shared across every frame, so the crop doesn't jitter between frames.
+    Each entry of `datasets` is:
+        name:              tag carried through to the batch
+        manifest:          csv from build_manifest.py (path,num_frames,fps,duration,source)
+        mode:              "single"  -> one window spanning the whole video (ssv2 / kinetics)
+                           "segment" -> one window per `segment_seconds` chunk (ego4d)
+        segment_seconds:   chunk length for mode="segment" (default 180 = 3 min)
+        max_windows:       optional cap on windows per video, evenly spread
+        weight:            optional sampling weight, used by make_weighted_sampler
+
+    Video lengths are read from the manifest, so __init__ never opens a video. A clip
+    is `roll_out` frames spaced by a random stride in [1, max_stride], starting at a
+    random offset *inside its window*. One RandomResizedCrop + optional hflip is drawn
+    per clip and shared across frames, so the crop doesn't jitter.
     """
 
     def __init__(self, config):
-        self.video_csv = config["video_csv"]
-        self.roll_out = config.get("roll_out", 16) # inspired from V-JEPA 2.1
-        self.max_stride = config.get("max_stride", 3) # 12 fps, 3 stride --> 3 * 16 = 48, 
+        self.roll_out = config.get("roll_out", 16)  # inspired from V-JEPA 2.1
+        self.max_stride = config.get("max_stride", 3)  # 12 fps, 3 stride --> 3 * 16 = 48
         self.min_duration = config.get("min_duration_frames", 48)
         self.frame_size = tuple(config.get("frame_size", FRAME_SIZE))
 
-        self.rng = np.random.default_rng()
+        # A window must be long enough to hold one stride-1 clip.
+        self.min_window = max(self.min_duration, self.roll_out)
 
-        self.data_paths = []
+        # rng is created lazily so each dataloader worker gets a distinct stream.
+        self._rng = None
 
-        with open(self.video_csv, mode="r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
+        specs = config.get("datasets")
+        if specs is None:  # backwards compat with the old single-csv config
+            specs = [{"name": "default", "manifest": config["video_csv"], "mode": "single"}]
+
+        self.windows: list[ClipWindow] = []
+        self.source_weights: dict[str, float] = {}
+        for spec in specs:
+            name = spec.get("name", os.path.basename(spec["manifest"]))
+            self.source_weights[name] = float(spec.get("weight", 1.0))
+            before = len(self.windows)
+            self.windows.extend(self._windows_for_spec(spec, name))
+            n_new = len(self.windows) - before
+            print(f"[RVMDataset] {name}: {n_new} windows (mode={spec.get('mode', 'single')})")
+
+        print(f"[RVMDataset] {len(self.windows)} windows total.")
+
+
+    @property
+    def rng(self):
+        if self._rng is None:
+            # torch.initial_seed() differs per worker and per epoch.
+            self._rng = np.random.default_rng(torch.initial_seed() % (2**32))
+        return self._rng
+
+    def _windows_for_spec(self, spec, name):
+        mode = spec.get("mode", "single")
+        segment_seconds = float(spec.get("segment_seconds", 180.0))
+        max_windows = spec.get("max_windows")
+
+        windows = []
+        with open(spec["manifest"], newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
                 path = row["path"].strip()
-                if path:
-                    self.data_paths.append(path)
+                if not path:
+                    continue
+                num_frames = int(row["num_frames"])
+                fps = float(row.get("fps") or 0.0)
+                if num_frames < self.min_window:
+                    continue
 
-        print(f"Loaded {len(self.data_paths)} videos.")
+                if mode == "single":
+                    windows.append(ClipWindow(path, 0, num_frames, name))
+                    continue
+
+                # mode == "segment": chunk the video into equal windows.
+                seg = int(round(segment_seconds * fps)) if fps > 0 else num_frames
+                seg = max(seg, self.min_window)
+                n_seg = max(1, num_frames // seg)
+                if max_windows:
+                    n_seg = min(n_seg, int(max_windows))
+
+                # Spread windows evenly so the tail is absorbed rather than dropped.
+                bounds = np.linspace(0, num_frames, n_seg + 1).round().astype(int)
+                for start, end in zip(bounds[:-1], bounds[1:]):
+                    if end - start >= self.min_window:
+                        windows.append(ClipWindow(path, int(start), int(end), name))
+        return windows
+
 
     def _open_video(self, fname):
         if not os.path.exists(fname):
@@ -58,6 +134,23 @@ class RVMDataset(Dataset):
         except Exception as e:
             print(f"[RVMDataset] failed to open {fname}: {e}")
             return None
+
+    def _sample_indices(self, win_start, win_end, total_frames):
+        """Pick `roll_out` strided indices inside [win_start, win_end)."""
+        win_end = min(win_end, total_frames)
+        available = win_end - win_start
+        if available < self.roll_out:
+            return None
+
+        stride = int(self.rng.integers(1, self.max_stride + 1))
+        span = (self.roll_out - 1) * stride
+        if span >= available:
+            stride = max(1, (available - 1) // (self.roll_out - 1))
+            span = (self.roll_out - 1) * stride
+
+        start = win_start + int(self.rng.integers(0, available - span))
+        indices = start + np.arange(self.roll_out) * stride
+        return np.clip(indices, 0, total_frames - 1)
 
 
     def _random_resized_crop_params(self, height: int, width: int):
@@ -108,38 +201,44 @@ class RVMDataset(Dataset):
             out[t] = frame
         return out
 
-    def _load_frames(self, fname):
-        vr = self._open_video(fname)
-        if vr is None or len(vr) < self.min_duration:
+    def _load_frames(self, window: ClipWindow):
+        vr = self._open_video(window.path)
+        if vr is None:
             return None
 
         total_frames = len(vr)
-        stride = int(self.rng.integers(1, self.max_stride + 1))
-        span = (self.roll_out - 1) * stride
-        if span >= total_frames:
-            stride = max(1, (total_frames - 1) // (self.roll_out - 1))
-            span = (self.roll_out - 1) * stride
-        start = int(self.rng.integers(0, total_frames - span))
-        sampled_indices = start + np.arange(self.roll_out) * stride
+        if total_frames < self.min_window:
+            return None
 
-        buffer = vr.get_batch(sampled_indices).asnumpy()  # [roll_out, H, W, 3]
+        sampled_indices = self._sample_indices(window.start, window.end, total_frames)
+        if sampled_indices is None:
+            return None
+
+        try:
+            buffer = vr.get_batch(sampled_indices).asnumpy()  # [roll_out, H, W, 3]
+        except Exception as e:
+            print(f"[RVMDataset] decode failed {window.path}[{window.start}:{window.end}]: {e}")
+            return None
+
         buffer = self._augment(buffer)
         frames = buffer.astype(np.float32) / 255.0  # [roll_out, H, W, 3]
         frames = torch.from_numpy(frames).permute(0, 3, 1, 2).contiguous()  # [roll_out, C, H, W]
 
         return frames, torch.from_numpy(sampled_indices.astype(np.int64))
 
+
     def __getitem__(self, index):
         # Try up to 20 times to find a valid sample.
         for _ in range(20):
-            video_path = self.data_paths[index]
-            sample = self._load_frames(video_path)
+            window = self.windows[index]
+            sample = self._load_frames(window)
 
             if sample is not None:
                 context, sampled_indices = sample
                 return {
                     "context": context,
                     "sampled_indices": sampled_indices,
+                    "source": window.source,
                 }
 
             index = int(self.rng.integers(len(self)))
@@ -159,16 +258,40 @@ class RVMDataset(Dataset):
         return {
             "context": context,
             "sampled_indices": sampled_indices,
+            "source": "dummy",
         }
 
     def __len__(self):
-        return len(self.data_paths)
+        return len(self.windows)
+
+    def make_weighted_sampler(self, num_samples=None):
+        """Balance sources so Ego4D's many windows don't drown out ssv2/kinetics.
+
+        Per-source weight is `spec.weight / n_windows_in_source`, so each source's
+        total mass equals its configured weight.
+        """
+        from torch.utils.data import WeightedRandomSampler
+
+        counts = {}
+        for window in self.windows:
+            counts[window.source] = counts.get(window.source, 0) + 1
+        weights = torch.tensor(
+            [
+                self.source_weights.get(w.source, 1.0) / counts[w.source]
+                for w in self.windows
+            ],
+            dtype=torch.double,
+        )
+        return WeightedRandomSampler(
+            weights, num_samples or len(self.windows), replacement=True
+        )
 
     @staticmethod
     def collate_fn(batch):
         return {
             "context": torch.stack([item["context"] for item in batch], dim=0),         # [B, roll_out, C, H, W]
             "sampled_indices": torch.stack([item["sampled_indices"] for item in batch], dim=0),  # [B, roll_out]
+            "source": [item["source"] for item in batch],
         }
 
 
@@ -179,9 +302,14 @@ if __name__ == "__main__":
 
     dataset = RVMDataset(config)
     loader = torch.utils.data.DataLoader(
-        dataset, batch_size=2, shuffle=True, collate_fn=RVMDataset.collate_fn
+        dataset,
+        batch_size=2,
+        sampler=dataset.make_weighted_sampler(),
+        num_workers=2,
+        collate_fn=RVMDataset.collate_fn,
     )
 
     batch = next(iter(loader))
     ic(batch["context"].shape)
     ic(batch["sampled_indices"].shape)
+    ic(batch["source"])
