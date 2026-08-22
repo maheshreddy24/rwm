@@ -103,9 +103,9 @@ def show(imgs, upsample=16, out="rvm_pca.png", frames=None):
         ax.imshow(big[t])
         ax.set_title(f"frame {t}")
         ax.axis("off")
-    plt.tight_layout()
-    plt.savefig(out, dpi=140, bbox_inches="tight")
-    print("saved", out)
+    # plt.tight_layout()
+    # plt.savefig(out, dpi=140, bbox_inches="tight")
+    # print("saved", out)
     return fig
 
 

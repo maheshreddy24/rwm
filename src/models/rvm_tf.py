@@ -106,6 +106,7 @@ class RecurrentWorldModel(nn.Module):
 
         if encoder is None:
             from transformers import AutoModel
+            print(f'loading the vision encoder from {encoder_name}')
             encoder = AutoModel.from_pretrained(encoder_name)
         self.encoder = encoder
 
@@ -398,7 +399,12 @@ class RecurrentWorldModel(nn.Module):
             memory.append(out)
             times.append(tau)
 
-        return torch.stack(preds, dim=1)
+        # return torch.stack(preds, dim=1)
+        return {
+            "pred": torch.stack(preds, dim=1),
+            "context_memory": torch.stack(memory, dim=1),
+            "context_feat": feats,
+        }
 
     @torch.no_grad()
     def step(
