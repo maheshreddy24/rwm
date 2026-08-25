@@ -318,13 +318,13 @@ class RecurrentWorldModel(nn.Module):
             queries, kv, attn_mask,
             q_pos=self._rope(q_coords, hd), kv_pos=self._rope(kv_coords, hd),
         )
-        pred = self.repr_head(decoded).view(B, Tt, n_tok, self.d_enc)
+        # pred = self.repr_head(decoded).view(B, Tt, n_tok, self.d_enc)
 
-        gap = frame_times[:, target_idx] - frame_times[:, target_idx - 1]
+        # gap = frame_times[:, target_idx] - frame_times[:, target_idx - 1]
 
-        # `pred`/`repr_loss` are always computed -- cheap (one linear layer) and
-        # useful to log even when they are not the training signal.
-        repr_loss = self.loss(pred=pred, target=feats, target_idx=target_idx)
+        # # `pred`/`repr_loss` are always computed -- cheap (one linear layer) and
+        # # useful to log even when they are not the training signal.
+        # repr_loss = self.loss(pred=pred, target=feats, target_idx=target_idx)
         recon_img, recon_loss = None, None
 
         if self.pixel_recon:
@@ -344,6 +344,11 @@ class RecurrentWorldModel(nn.Module):
 
             target_img = frames[:, target_idx]                         # (B, Tt, 3, H, W)
             recon_loss = F.mse_loss(recon_img, target_img)
+
+        else:
+            pred = self.repr_head(decoded).view(B, Tt, n_tok, self.d_enc)
+            gap = frame_times[:, target_idx] - frame_times[:, target_idx - 1]
+            repr_loss = self.loss(pred=pred, target=feats, target_idx=target_idx)
 
         loss = recon_loss if self.objective == "pixel" else repr_loss
 
