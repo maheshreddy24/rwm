@@ -353,6 +353,7 @@ class RecurrentWorldModel(nn.Module):
             "gap": gap,                  # (B, Tt), reported only; RoPE carries it
             "grid": int(round(math.sqrt(P))),
             "recon": recon_img,          # (B, Tt, 3, H, W) if pixel_recon else None
+            "target_image": target_img,
             "repr_loss": repr_loss,
             "recon_loss": recon_loss,
             "loss": loss,

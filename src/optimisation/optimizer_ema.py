@@ -5,12 +5,14 @@ import os
 import time
 from typing import Optional
 
+import cv2
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import numpy as np
 
 
 def get_logger(log_path: str) -> logging.Logger:
@@ -59,7 +61,7 @@ class Trainer:
         eval_loader: Optional[DataLoader],
         config: dict,
     ):
-        self.config = config
+        self.config = config["trainer"]
         self.device = self.config.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = model.to(self.device)
@@ -80,6 +82,8 @@ class Trainer:
         self.checkpoint_dir = os.path.join(self.config["checkpoint_dir"], f"exp_{time.time()}")
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         self.logger = get_logger(os.path.join(self.checkpoint_dir, "train.log"))
+        self.logger.info(config['trainer'])
+        self.logger.info(config['model'])
 
         self.optimizer = None
         self.scheduler = None
@@ -203,7 +207,10 @@ class Trainer:
                 if self.global_step % int(self.config["save_every_steps"]) == 0:
                     self.save_checkpoint()
 
-                if self.eval_loader is not None and self.global_step % int(self.config["eval_every_steps"]) == 0:
+                # if epoch > 1, halve the eval frequency (double the interval)
+                count = 2 if self.epoch > 1 else 1
+                eval_every = int(self.config["eval_every_steps"]) * count
+                if self.eval_loader is not None and self.global_step % eval_every == 0:
                     self._evaluate_and_log()
 
             self.epoch += 1
@@ -263,7 +270,7 @@ class Trainer:
             frame_times = batch["sampled_indices"].to(self.device, non_blocking=True).float()
             target_idx = torch.arange(self.min_context, context.shape[1], device=self.device)
             out = self.model(context, target_idx, frame_times)
-            return out, out["loss"]
+            return out, out["loss"] # the loss is from the RWM model not computed here
 
         source, target, target_deltas = _unpack_batch(batch)
         source = source.to(self.device, non_blocking=True)   # (B, Ts, C, H, W)
@@ -292,12 +299,29 @@ class Trainer:
         self.scheduler.step()
         return loss.item()
 
+    def save_eval_images(self, recon: torch.Tensor, gt: torch.Tensor, step: int, epoch: int):
+        """Save one sample from the batch: top row ground-truth frames, bottom
+        row predicted frames, concatenated left-to-right across time. recon/gt:
+        (B, Tt, 3, H, W) in [0, 1]."""
+        out_dir = os.path.join(self.checkpoint_dir, "eval_images")
+        os.makedirs(out_dir, exist_ok=True)
+
+        gt_row = torch.cat(list(gt[0].detach().float().clamp(0, 1)), dim=-1)      # (3, H, Tt*W)
+        pred_row = torch.cat(list(recon[0].detach().float().clamp(0, 1)), dim=-1)  # (3, H, Tt*W)
+        grid = torch.cat([gt_row, pred_row], dim=-2)                              # (3, 2H, Tt*W)
+
+        img = (grid.permute(1, 2, 0).cpu().numpy() * 255.0).astype(np.uint8)
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(os.path.join(out_dir, f"log_{step}_{epoch}.png"), img)
+
     @torch.no_grad()
     def eval(self):
         self.model.eval()
         total_loss, n_batches = 0.0, 0
-        for batch in tqdm(self.eval_loader, total=len(self.eval_loader), leave=True):
-            _, loss = self._forward_batch(batch)
+        for step, batch in tqdm(enumerate(self.eval_loader), total=len(self.eval_loader), leave=True):
+            output, loss = self._forward_batch(batch)
+            if output.get("recon") is not None and np.random.rand() > 0.95:  # occasionally save a sample
+                self.save_eval_images(output["recon"], output["target_image"], step, self.epoch)
             total_loss += loss.item()
             n_batches += 1
 

@@ -88,7 +88,8 @@ def main():
     )
 
     model = RecurrentWorldModel(**config.get("model", {}))
-    trainer = Trainer(model, train_loader, eval_loader, config["trainer"])
+
+    trainer = Trainer(model, train_loader, eval_loader, config)
 
     if args.resume is not None:
         ckpt_path = None if args.resume == "__latest__" else args.resume
