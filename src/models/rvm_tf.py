@@ -430,7 +430,8 @@ class RecurrentWorldModel(nn.Module):
             times.append(context_times[:, t])
 
         hd = self.decoder.head_dim
-        preds = []
+        pixel = self.objective == "pixel"
+        preds, imgs = [], []
         for s in range(gaps.numel()):
             tau = step_times[:, s]
             if self.context_mode == "full":
@@ -444,10 +445,23 @@ class RecurrentWorldModel(nn.Module):
             q_coords = self._coords(tau, P)
 
             q = self._build_queries(B, P, dtype)
-            step = self.repr_head(self.decoder(
+            decoded = self.decoder(
                 q, kv, None,
                 q_pos=self._rope(q_coords, hd), kv_pos=self._rope(kv_coords, hd),
-            ))
+            )
+
+            if pixel:
+                # objective='pixel' never trains repr_head, so rolling out on
+                # images has no use for it. Reconstruct pixels instead, then
+                # re-encode that frame -- the core was only ever trained on
+                # real encoder features, never on repr_head's output.
+                patch_tokens = decoded if self.drop_cls else decoded[:, 1:]
+                recon_patches = self.recon_head(patch_tokens)
+                recon_img = self._unpatchify(recon_patches, grid=int(round(math.sqrt(P))))
+                imgs.append(recon_img)
+                step = self.encode(recon_img)
+            else:
+                step = self.repr_head(decoded)
             preds.append(step)
 
             # feed the prediction back, with its own timestamp
@@ -461,12 +475,15 @@ class RecurrentWorldModel(nn.Module):
             memory.append(out)
             times.append(tau)
 
-        # return torch.stack(preds, dim=1)
-        return {
+        out = {
             "pred": torch.stack(preds, dim=1),
             "context_memory": torch.stack(memory, dim=1),
             "context_feat": feats,
+            "state": state,
         }
+        if pixel:
+            out["recon"] = torch.stack(imgs, dim=1)          # (B, S, 3, H, W)
+        return out
 
     @torch.no_grad()
     def step(
