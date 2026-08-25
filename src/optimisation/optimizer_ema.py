@@ -321,7 +321,7 @@ class Trainer:
         for step, batch in tqdm(enumerate(self.eval_loader), total=len(self.eval_loader), leave=True):
             output, loss = self._forward_batch(batch)
             if output.get("recon") is not None and np.random.rand() > 0.95:  # occasionally save a sample
-                self.save_eval_images(output["recon"], output["target_image"], step, self.epoch)
+                self.save_eval_images(output["recon"], output["target_image"], self.global_step + step, self.epoch)
             total_loss += loss.item()
             n_batches += 1
 

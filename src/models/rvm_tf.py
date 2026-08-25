@@ -163,6 +163,9 @@ class RecurrentWorldModel(nn.Module):
                 nn.GELU(),
                 nn.Linear(dec_dim // 2, self.patch * self.patch * 3),
             )
+            print("=="*5)
+            print("Objective is pixel reconstruction")
+            ic(self.objective)
 
         # the entire content of a query: one learnable vector, shared by every
         # patch of every target frame. Position enters only through rotation.
@@ -325,9 +328,7 @@ class RecurrentWorldModel(nn.Module):
         recon_img, recon_loss = None, None
 
         if self.pixel_recon:
-            print("=="*5)
-            print("Objective is pixel reconstruction")
-            ic(self.objective)
+
             # objective='pixel': gradients flow into `core`/`decoder` from pixel
             # space, and `loss` below ignores repr_loss entirely -- this replaces
             # the representation objective rather than adding to it.

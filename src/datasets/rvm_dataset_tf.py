@@ -102,6 +102,8 @@ class RVMDataset(Dataset):
                 path = row["path"].strip()
                 if not path:
                     continue
+                if 'drawing' in path:
+                    continue
                 source = (row.get("source") or "default").strip()
                 num_frames = int(float(row["num_frames"]))
                 fps = float(row.get("fps") or 0.0)

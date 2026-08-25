@@ -44,8 +44,8 @@ dataset:
     manifest: /home/rvm/datasets/test_manifest.csv
     roll_out: 16
     frame_size: [252, 252]
-    max_stride: 5
-    min_duration_frames: 80
+    max_stride: 3
+    min_duration_frames: 48
     deterministic: true
     sources:
       ssv2:
@@ -69,7 +69,7 @@ dataloader:
   prefetch_factor: 4
 
 trainer:
-  checkpoint_dir: checkpoints/checkpoints_rwm
+  checkpoint_dir: checkpoints/checkpoints_rwm_recon
   lr: 1.5e-4          # recurrent core + decoder + repr_head
   weight_decay: 0.05
   betas: [0.9, 0.95]
