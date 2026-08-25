@@ -23,7 +23,7 @@ dataset:
     roll_out: 16
     max_stride: 3
     min_duration_frames: 48
-    frame_size: [256, 256]   # must match encoder patch_size (14) so H/patch is an integer grid
+    frame_size: [252, 252]   # must match encoder patch_size (14) so H/patch is an integer grid
     # Keyed by the `source` column in the manifest.
     sources:
       ssv2:
@@ -45,7 +45,7 @@ dataset:
     roll_out: 16
     max_stride: 3
     min_duration_frames: 48
-    frame_size: [256, 256]
+    frame_size: [252, 252]
     deterministic: true
     sources:
       ssv2:
