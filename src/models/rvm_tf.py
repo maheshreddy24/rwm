@@ -325,6 +325,9 @@ class RecurrentWorldModel(nn.Module):
         recon_img, recon_loss = None, None
 
         if self.pixel_recon:
+            print("=="*5)
+            print("Objective is pixel reconstruction")
+            ic(self.objective)
             # objective='pixel': gradients flow into `core`/`decoder` from pixel
             # space, and `loss` below ignores repr_loss entirely -- this replaces
             # the representation objective rather than adding to it.

@@ -10,7 +10,7 @@ model:
   dec_heads: 16
   dec_mlp: 768
   objective: pixel
-  pixel_recon: Trues
+  pixel_recon: True
   # mask_ratio: 0.95
   # mask_ratio: 1
   # max_delta: 64
@@ -43,9 +43,9 @@ dataset:
   eval:
     manifest: /home/rvm/datasets/test_manifest.csv
     roll_out: 16
-    max_stride: 3
-    min_duration_frames: 48
     frame_size: [252, 252]
+    max_stride: 5
+    min_duration_frames: 80
     deterministic: true
     sources:
       ssv2:
