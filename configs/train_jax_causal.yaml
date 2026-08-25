@@ -1,0 +1,62 @@
+seed: 42
+
+# rvm_dataset_tf.RVMDataset config -- see that file's docstring for field meaning.
+# `roll_out` frames are sampled per clip; `trainer.num_context` of them (below) seed the
+# recurrent state, the rest are causal targets (each predicted from the single state
+# right before it).
+dataset:
+  train:
+    manifest: /home/rvm/datasets/train_manifest.csv
+    roll_out: 16
+    max_stride: 3
+    min_duration_frames: 48
+    frame_size: [256, 256]
+    sources:
+      ssv2:
+        mode: single
+        weight: 1.0
+      kinetics:
+        mode: single
+        weight: 1.0
+      ego4d:
+        mode: segment
+        segment_seconds: 180
+        weight: 1.0
+    default_source:
+      mode: single
+      weight: 1.0
+  eval:
+    manifest: /home/rvm/datasets/test_manifest.csv
+    roll_out: 16
+    max_stride: 3
+    min_duration_frames: 48
+    frame_size: [256, 256]
+    deterministic: true
+
+dataloader:
+  batch_size: 16
+  num_workers: 16
+
+trainer:
+  checkpoint_dir: checkpoints_causal_jax
+  # init_params_path: /home/rvm/rvm_ckpts/pretrain_rvm_large16_256.npz
+
+  grad_accum: 1
+  epochs: 4
+
+  # optimizer (AdamW, MAE-lineage defaults)
+  lr_peak: 5.0e-5
+  lr_min: 5.0e-7
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.05
+  wd_skip: [bias, norm, cls_token, mask_token]
+  grad_clip: 1.0
+  warmup_ratio: 0.05
+
+  # frames [0, num_context) seed the state; frames [num_context, roll_out) are the
+  # causal, 100%-masked reconstruction targets
+  num_context: 8
+
+  log_interval: 100
+  eval_interval: 1000
