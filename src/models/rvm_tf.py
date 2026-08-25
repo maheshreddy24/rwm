@@ -100,9 +100,13 @@ class RecurrentWorldModel(nn.Module):
         rope_space_periods: Tuple[float, float] = (0.2, 4.0),
         drop_cls: bool = False,
         normalize_target: bool = False,
+        pixel_recon: bool = False,
+        objective: str = "repr",
     ):
         super().__init__()
         assert context_mode in ("full", "state")
+        assert objective in ("repr", "pixel")
+        assert objective != "pixel" or pixel_recon, "objective='pixel' needs pixel_recon=True"
 
         if encoder is None:
             from transformers import AutoModel
@@ -124,6 +128,8 @@ class RecurrentWorldModel(nn.Module):
         self.s_periods = rope_space_periods
         self.drop_cls = drop_cls
         self.normalize_target = normalize_target
+        self.pixel_recon = pixel_recon
+        self.objective = objective
 
         if freeze_encoder:
             for p in self.encoder.parameters():
@@ -145,6 +151,18 @@ class RecurrentWorldModel(nn.Module):
         self.decoder_embed = nn.Linear(self.d_enc, dec_dim)
         self.decoder = CrossAttentionTransformer(dec_dim, dec_heads, dec_layers, dec_mlp)
         self.repr_head = nn.Linear(dec_dim, self.d_enc)
+
+        # reconstructs pixels from the decoder's output (see `forward`). Whether this
+        # trains `core`/`decoder` (objective='pixel') or is just a detached probe
+        # that watches them without shaping them (objective='repr') is decided in
+        # `forward`. Small on purpose: a 2-layer MLP per patch token, not a real
+        # image decoder.
+        if self.pixel_recon:
+            self.recon_head = nn.Sequential(
+                nn.Linear(dec_dim, dec_dim // 2),
+                nn.GELU(),
+                nn.Linear(dec_dim // 2, self.patch * self.patch * 3),
+            )
 
         # the entire content of a query: one learnable vector, shared by every
         # patch of every target frame. Position enters only through rotation.
@@ -203,6 +221,14 @@ class RecurrentWorldModel(nn.Module):
         sp = grid.expand(*tau.shape, n_tok, 2)
         t = tau.to(torch.float32).unsqueeze(-1).unsqueeze(-1).expand(*tau.shape, n_tok, 1)
         return torch.cat([t, sp], dim=-1)
+
+    def _unpatchify(self, patches: torch.Tensor, grid: int) -> torch.Tensor:
+        """(M, grid*grid, patch*patch*3) -> (M, 3, grid*patch, grid*patch)."""
+        p = self.patch
+        M = patches.shape[0]
+        x = patches.reshape(M, grid, grid, p, p, 3)
+        x = x.permute(0, 5, 1, 3, 2, 4)          # M, 3, grid, p, grid, p
+        return x.reshape(M, 3, grid * p, grid * p)
 
     def _rope(self, coords: torch.Tensor, head_dim: int) -> RoPE:
         per = rope_periods(head_dim, self.t_periods, self.s_periods, coords.device)
@@ -293,14 +319,40 @@ class RecurrentWorldModel(nn.Module):
 
         gap = frame_times[:, target_idx] - frame_times[:, target_idx - 1]
 
-        loss = self.loss(pred=pred, target=feats, target_idx=target_idx)
+        # `pred`/`repr_loss` are always computed -- cheap (one linear layer) and
+        # useful to log even when they are not the training signal.
+        repr_loss = self.loss(pred=pred, target=feats, target_idx=target_idx)
+        recon_img, recon_loss = None, None
+
+        if self.pixel_recon:
+            # objective='pixel': gradients flow into `core`/`decoder` from pixel
+            # space, and `loss` below ignores repr_loss entirely -- this replaces
+            # the representation objective rather than adding to it.
+            # objective='repr': detach, so this is a passive probe on what the
+            # decoder already produces, and cannot influence it.
+            tokens = decoded if self.objective == "pixel" else decoded.detach()
+            # (unlike `encode`'s output, `decoded` already omits CLS when drop_cls is
+            # set -- `_build_queries` never appended `cls_query` in that case.)
+            patch_tokens = tokens if self.drop_cls else tokens[:, 1:]  # (B*Tt, P, Dd)
+            recon_patches = self.recon_head(patch_tokens)              # (B*Tt, P, patch^2*3)
+            recon_img = self._unpatchify(recon_patches, grid=int(round(math.sqrt(P))))
+            recon_img = recon_img.view(B, Tt, *recon_img.shape[1:])    # (B, Tt, 3, H, W)
+
+            target_img = frames[:, target_idx]                         # (B, Tt, 3, H, W)
+            recon_loss = F.mse_loss(recon_img, target_img)
+
+        loss = recon_loss if self.objective == "pixel" else repr_loss
+
         return {
             "pred": pred,                # (B, Tt, n_tok, D)
             "memory": memory,            # (B, N,  n_tok, D)
             "state": state,              # (B, n_tok, D)
             "gap": gap,                  # (B, Tt), reported only; RoPE carries it
-            "grid": int(round(math.sqrt(P))),            
-            "loss": loss
+            "grid": int(round(math.sqrt(P))),
+            "recon": recon_img,          # (B, Tt, 3, H, W) if pixel_recon else None
+            "repr_loss": repr_loss,
+            "recon_loss": recon_loss,
+            "loss": loss,
         }
 
     def _build_queries(self, n_rows: int, P: int, dtype) -> torch.Tensor:

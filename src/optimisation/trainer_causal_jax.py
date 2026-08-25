@@ -48,12 +48,6 @@ from src.optimisation.optimier_ema_jax import (
 
 CKPT_RE = re.compile(r"model_(\d+)_(\d+)\.npz")
 
-
-# --------------------------------------------------------------------------------------
-# config
-# --------------------------------------------------------------------------------------
-
-
 @dataclasses.dataclass
 class CausalTrainerConfig:
     """Hyperparameters for `Trainer`. Field names mirror `EMATrainerConfig` in
@@ -85,7 +79,7 @@ class CausalTrainerConfig:
 
     # causal split: frames [0, num_context) seed the state, [num_context, roll_out) are
     # the targets that get reconstructed (see `context_target_split`)
-    num_context: int = 8
+    num_context: int = 16 #! inspired from vjepa.21
 
     # loss -- kwargs forwarded to rvm_loss(); every target patch is masked by
     # construction, so masked_only is always False
@@ -96,13 +90,10 @@ class CausalTrainerConfig:
     eval_interval: int = 1000
 
     # wandb
-    wandb_project: str = "rvm"
+    wandb_project: str = "rwm"
     wandb_name: Optional[str] = None
 
 
-# --------------------------------------------------------------------------------------
-# dataset
-# --------------------------------------------------------------------------------------
 
 
 def numpy_collate(batch):
@@ -133,9 +124,6 @@ def build_dataloader(dataset_config, dataloader_config, shuffle: bool, num_worke
     )
 
 
-# --------------------------------------------------------------------------------------
-# steps
-# --------------------------------------------------------------------------------------
 
 
 def make_train_step(model, config: CausalTrainerConfig, schedule, target_indices, patch_size):
@@ -190,11 +178,6 @@ def make_eval_step(model, target_indices, patch_size):
         return {"loss": loss}
 
     return jax.jit(eval_step)
-
-
-# --------------------------------------------------------------------------------------
-# trainer
-# --------------------------------------------------------------------------------------
 
 
 class Trainer:
@@ -299,7 +282,6 @@ class Trainer:
         wandb.define_metric("train/*", step_metric="global_step")
         wandb.define_metric("eval/*", step_metric="global_step")
 
-    # -- checkpointing -----------------------------------------------------------------
 
     def _checkpoints(self) -> list[tuple[int, int, str]]:
         """(epoch, step, path) for every checkpoint in `checkpoint_dir`, oldest first."""
@@ -353,7 +335,6 @@ class Trainer:
         self.logger.info(f"resumed from {path} (epoch {self.current_epoch}, step {self.global_step})")
         return True
 
-    # -- eval / logging ----------------------------------------------------------------
 
     def _log(self, payload: dict):
         wandb.log(payload | {"epoch": self.current_epoch, "global_step": self.global_step})
@@ -385,7 +366,6 @@ class Trainer:
         self.logger.info(f"saved {path}")
         return path
 
-    # -- loop --------------------------------------------------------------------------
 
     def train(self, max_steps: Optional[int] = None, resume: bool = False):
         """Run the training loop.
@@ -434,10 +414,6 @@ class Trainer:
 
         wandb.finish()
 
-
-# --------------------------------------------------------------------------------------
-# CLI
-# --------------------------------------------------------------------------------------
 
 
 def main():
