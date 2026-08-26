@@ -589,7 +589,7 @@ class RecurrentWorldModel(nn.Module):
 
 
     @torch.no_grad()
-    def step(
+    def step(   
         self,
         frame: torch.Tensor,                       # (B, 3, H, W)
         state: Optional[torch.Tensor] = None,
