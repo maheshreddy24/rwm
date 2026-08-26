@@ -486,6 +486,109 @@ class RecurrentWorldModel(nn.Module):
         return out
 
     @torch.no_grad()
+    def teacher_forcing_rollout(
+        self,
+        context: torch.Tensor,                          # (B, C, 3, H, W)
+        targets: torch.Tensor,                           # (B, S, 3, H, W) ground-truth future frames
+        context_times: Optional[torch.Tensor] = None,    # (B, C) float
+        target_times: Optional[torch.Tensor] = None,     # (B, S) float
+        state: Optional[torch.Tensor] = None,
+    ) -> dict:
+        """Image-space teacher-forced rollout. Same per-step query/decode loop as
+        `rollout`, but the core's input at step s is the TRUE encoded target
+        frame `targets[:, s]`, not the model's own reconstruction fed back. This
+        isolates decoder/recon_head error from the core's autoregressive drift --
+        diff `out["recon"]` here against `rollout`'s `recon` on the same clip to
+        see how much of rollout's degradation is drift vs. decoder underfit.
+
+        Requires self.pixel_recon (recon_head must exist).
+        """
+        assert self.pixel_recon, "teacher_forcing_rollout needs pixel_recon=True"
+        self.eval()
+        B, C = context.shape[:2]
+        S = targets.shape[1]
+        device = context.device
+
+        ctx_feats = self.encode(context.reshape(B * C, *context.shape[2:]))
+        ctx_feats = ctx_feats.view(B, C, *ctx_feats.shape[1:])
+        tgt_feats = self.encode(targets.reshape(B * S, *targets.shape[2:]))
+        tgt_feats = tgt_feats.view(B, S, *tgt_feats.shape[1:])
+        n_tok = ctx_feats.shape[2]
+        P = n_tok if self.drop_cls else n_tok - 1
+        dtype = ctx_feats.dtype
+
+        if context_times is None:
+            context_times = torch.arange(C, device=device, dtype=torch.float32)
+            context_times = context_times.unsqueeze(0).expand(B, C)
+        context_times = context_times.to(device=device, dtype=torch.float32)
+
+        if target_times is None:
+            target_times = C + torch.arange(S, device=device, dtype=torch.float32)
+            target_times = target_times.unsqueeze(0).expand(B, S)
+        target_times = target_times.to(device=device, dtype=torch.float32)
+
+        if state is None:
+            state = ctx_feats.new_zeros(B, n_tok, self.d_enc)
+        memory, times = [], []
+        for t in range(C):
+            out, state = self._run_core(ctx_feats, context_times, state, t, n_tok)
+            memory.append(out)
+            times.append(context_times[:, t])
+
+        hd, hdc = self.decoder.head_dim, self.core.head_dim
+        grid = int(round(math.sqrt(P)))
+        imgs = []
+        for s in range(S):
+            tau = target_times[:, s]
+
+            if self.context_mode == "full":
+                kv = torch.stack(memory, dim=1).reshape(B, -1, self.d_enc)
+                kv_tau = torch.stack(times, dim=1)                 # (B, k)
+            else:
+                kv = memory[-1]
+                kv_tau = times[-1].unsqueeze(1)                    # (B, 1)
+            kv = self.decoder_embed(kv)
+            kv_coords = self._coords(kv_tau, P).reshape(B, -1, 3)
+            q_coords = self._coords(tau, P)
+
+            q = self._build_queries(B, P, dtype)
+            decoded = self.decoder(
+                q, kv, None,
+                q_pos=self._rope(q_coords, hd), kv_pos=self._rope(kv_coords, hd),
+            )
+
+            patch_tokens = decoded if self.drop_cls else decoded[:, 1:]
+            recon_patches = self.recon_head(patch_tokens)
+            recon_img = self._unpatchify(recon_patches, grid=grid)
+            imgs.append(recon_img)
+
+            # teacher forcing: core sees the TRUE target frame's encoding, not
+            # its own reconstruction re-encoded
+            prev_tau = times[-1]
+            out, state = self.core(
+                tgt_feats[:, s], state,
+                self._rope(self._coords(tau, P), hdc),
+                self._rope(self._coords(prev_tau, P), hdc),
+            )
+            memory.append(out)
+            times.append(tau)
+
+        # return {
+        #     "recon": torch.stack(imgs, dim=1),           # (B, S, 3, H, W)
+        #     "target_feat": tgt_feats,                     # (B, S, n_tok, D)
+        #     "context_memory": torch.stack(memory, dim=1),
+        #     "state": state,
+        # }
+        return {
+            "recon": torch.stack(imgs, dim=1),           # (B, S, 3, H, W)
+            "target_feat": tgt_feats,                     # (B, S, n_tok, D) ground-truth encoded targets
+            "context_memory": torch.stack(memory, dim=1), # (B, C+S, n_tok, D) core outputs, context + teacher-forced steps
+            "context_feat": ctx_feats,                     # (B, C, n_tok, D) raw encoder features for the context frames
+            "state": state,
+        }
+
+
+    @torch.no_grad()
     def step(
         self,
         frame: torch.Tensor,                       # (B, 3, H, W)
