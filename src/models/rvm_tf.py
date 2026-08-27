@@ -69,10 +69,10 @@ class RecurrentWorldModel(nn.Module):
                         edge-to-edge, one patch is 2/grid, so ~(0.2, 4.0)
                         covers neighbour-level to whole-image structure.
         normalize_target: layer-norm each target token (over D) before the
-                        MSE. Without it, a handful of high-norm tokens --
+                        loss. Without it, a handful of high-norm tokens --
                         CLS, and register-less DINOv2's high-norm artifact
                         patches -- dominate the mean over all tokens, since
-                        F.mse_loss averages raw squared error across every
+                        F.smooth_l1_loss averages raw error across every
                         token indiscriminately. Per-token layer-norm puts
                         every token on the same scale before the loss sees
                         it; `pred` needs no matching treatment since
@@ -126,7 +126,7 @@ class RecurrentWorldModel(nn.Module):
         self.loss_beta = loss_beta
         self.t_periods = rope_time_periods
         self.s_periods = rope_space_periods
-        self.drop_cls = drop_cls
+        self.drop_cls = drop_cls    
         self.normalize_target = normalize_target
         self.pixel_recon = pixel_recon
         self.objective = objective
@@ -376,9 +376,9 @@ class RecurrentWorldModel(nn.Module):
     def loss(self, pred: torch.Tensor, target: torch.Tensor, target_idx: torch.Tensor) -> torch.Tensor:
         """target is `feats` (B, N, n_tok, D); pick out the frames pred was built for."""
         tgt = target[:, target_idx, ...].detach()
-        if self.normalize_target:
-            tgt = F.layer_norm(tgt, tgt.shape[-1:])
-        return F.mse_loss(pred, tgt)
+            # if self.normalize_target:
+            #     tgt = F.layer_norm(tgt, tgt.shape[-1:])
+        return F.smooth_l1_loss(pred, tgt, beta=self.loss_beta)
 
 
     @torch.no_grad()

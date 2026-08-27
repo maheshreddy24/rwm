@@ -11,18 +11,19 @@ model:
   dec_mlp: 768
   objective: pixel
   pixel_recon: True
-  # mask_ratio: 0.95
-  # mask_ratio: 1
-  # max_delta: 64
-  # freeze_encoder: True
-  # checkpoint_core: false
+
 
 dataset:
   train:
     manifest: /home/rvm/datasets/train_manifest.csv
-    roll_out: 16
-    max_stride: 3
-    min_duration_frames: 48
+    context_frames: 5
+    min_stride: 5 
+    max_stride: 10
+    target_frames: 5
+    target_min_stride: 20
+    target_max_stride: 30
+
+    min_duration_frames: 200
     frame_size: [252, 252]   # must match encoder patch_size (14) so H/patch is an integer grid
     # Keyed by the `source` column in the manifest.
     sources:
@@ -42,11 +43,15 @@ dataset:
       weight: 1.0
   eval:
     manifest: /home/rvm/datasets/test_manifest.csv
-    roll_out: 16
     frame_size: [252, 252]
-    max_stride: 3
-    min_duration_frames: 48
-    deterministic: true
+    context_frames: 5
+    min_stride: 5
+    max_stride: 10
+    target_frames: 5
+    target_min_stride: 20
+    target_max_stride: 30
+    min_duration_frames: 200
+    deterministic: false
     sources:
       ssv2:
         mode: single
@@ -75,7 +80,7 @@ trainer:
   betas: [0.9, 0.95]
   eps: 1e-8
   grad_clip_norm: 1.0
-  min_context: 10 # rwm
+  min_context: 5 # rwm
 
   num_epochs: 8
   warmup_ratio: 0.05

@@ -52,20 +52,39 @@ class RVMDataset(Dataset):
         frame_size:            (H, W) to resize decoded frames to, default (256, 256)
         deterministic:         eval mode - center crop, no flip, fixed stride, window
                                center start. Set True for the test manifest.
+        context_frames:        number of leading frames sampled with
+                               [min_stride, max_stride] gaps (default: all of roll_out)
+        target_frames:         number of trailing frames sampled with
+                               [target_min_stride, target_max_stride] gaps
+                               (default: 0, i.e. no separate target segment)
+        target_min_stride:     min stride for target-segment gaps (default: min_stride)
+        target_max_stride:     max stride for target-segment gaps (default: max_stride)
 
     Video lengths come from the manifest, so __init__ never opens a video. A clip is
-    `roll_out` frames spaced by a random stride in [1, max_stride], starting at a
-    random offset *inside its window*. One RandomResizedCrop + optional hflip is drawn
-    per clip and shared across frames, so the crop doesn't jitter.
+    `roll_out` frames starting at a random offset *inside its window*. If
+    `context_frames`/`target_frames` are set, `roll_out = context_frames + target_frames`
+    and the first `context_frames - 1` gaps are drawn from [min_stride, max_stride] while
+    the remaining `target_frames` gaps are drawn from [target_min_stride, target_max_stride]
+    (each gap independently). Without them, every gap uses [min_stride, max_stride], as
+    before. One RandomResizedCrop + optional hflip is drawn per clip and shared across
+    frames, so the crop doesn't jitter.
     """
 
     DEFAULT_SOURCE = {"mode": "single", "weight": 1.0}
 
     def __init__(self, config, manifest=None, deterministic=None):
         self.manifest_path = manifest or config["manifest"]
-        self.roll_out = config.get("roll_out", 16)  # inspired from V-JEPA 2.1
-        self.max_stride = config.get("max_stride", 3)  # 12 fps, 3 stride --> 3 * 16 = 48
-        self.min_duration = config.get("min_duration_frames", 48)
+        self.context_frames = config.get("context_frames")
+        self.target_frames = config.get("target_frames", 0) or 0
+        if self.context_frames is not None:
+            self.roll_out = self.context_frames + self.target_frames
+        else:
+            self.roll_out = config.get("roll_out", 16)  # inspired from V-JEPA 2.1
+        self.min_stride = config.get("min_stride", 5)
+        self.max_stride = config.get("max_stride", 12)  # 12 fps, 3 stride --> 3 * 16 = 48
+        self.target_min_stride = config.get("target_min_stride", self.min_stride)
+        self.target_max_stride = config.get("target_max_stride", self.max_stride)
+        self.min_duration = config.get("min_duration_frames", 80)
         self.frame_size = tuple(config.get("frame_size", FRAME_SIZE))
         self.deterministic = (
             config.get("deterministic", False) if deterministic is None else deterministic
@@ -170,28 +189,54 @@ class RVMDataset(Dataset):
             return None
 
     def _sample_indices(self, win_start, win_end, total_frames):
-        """Pick `roll_out` strided indices inside [win_start, win_end)."""
+        """Pick `roll_out` indices inside [win_start, win_end). Each gap between
+        consecutive frames is drawn independently (no fixed clip stride): the first
+        `context_frames - 1` gaps from [min_stride, max_stride], the remaining
+        `target_frames` gaps from [target_min_stride, target_max_stride]. Without
+        `context_frames` set, every gap uses [min_stride, max_stride]."""
         win_end = min(win_end, total_frames)
         available = win_end - win_start
         if available < self.roll_out:
             return None
 
-        if self.deterministic:
-            stride = self.max_stride
+        n_gaps = self.roll_out - 1
+        if n_gaps <= 0:
+            return np.clip(win_start + np.arange(self.roll_out), 0, total_frames - 1)
+
+        if self.context_frames is not None:
+            n_ctx_gaps = max(0, min(self.context_frames - 1, n_gaps))
         else:
-            stride = int(self.rng.integers(1, self.max_stride + 1))
+            n_ctx_gaps = n_gaps
+        n_tgt_gaps = n_gaps - n_ctx_gaps
 
-        span = (self.roll_out - 1) * stride
-        if span >= available:
-            stride = max(1, (available - 1) // (self.roll_out - 1))
-            span = (self.roll_out - 1) * stride
+        # Cap strides so the worst case (all gaps at their max) still fits the window.
+        max_span = available - 1
+        ctx_hi, tgt_hi = self.max_stride, self.target_max_stride
+        worst_case = n_ctx_gaps * ctx_hi + n_tgt_gaps * tgt_hi
+        if worst_case > max_span:
+            scale = max_span / worst_case
+            ctx_hi = max(1, int(ctx_hi * scale))
+            tgt_hi = max(1, int(tgt_hi * scale))
+        ctx_lo = min(self.min_stride, ctx_hi)
+        tgt_lo = min(self.target_min_stride, tgt_hi)
 
         if self.deterministic:
+            ctx_stride, tgt_stride = ctx_hi, tgt_hi
+            span = n_ctx_gaps * ctx_stride + n_tgt_gaps * tgt_stride
             offset = (available - span) // 2  # window center
-        else:
-            offset = int(self.rng.integers(0, available - span))
+            strides = np.concatenate(
+                [np.full(n_ctx_gaps, ctx_stride, dtype=np.int64), np.full(n_tgt_gaps, tgt_stride, dtype=np.int64)]
+            )
+            indices = win_start + offset + np.concatenate([[0], np.cumsum(strides)])
+            return np.clip(indices, 0, total_frames - 1)
 
-        indices = win_start + offset + np.arange(self.roll_out) * stride
+        ctx_strides = self.rng.integers(ctx_lo, ctx_hi + 1, size=n_ctx_gaps)
+        tgt_strides = self.rng.integers(tgt_lo, tgt_hi + 1, size=n_tgt_gaps)
+        strides = np.concatenate([ctx_strides, tgt_strides])
+        span = int(strides.sum())
+        offset = int(self.rng.integers(0, available - span))
+
+        indices = win_start + offset + np.concatenate([[0], np.cumsum(strides)])
         return np.clip(indices, 0, total_frames - 1)
 
     # ------------------------------------------------------------- augmentation
