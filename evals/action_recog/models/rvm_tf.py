@@ -68,12 +68,21 @@ class RecurrentWorldModel(nn.Module):
         rope_space_periods: periods in normalized grid units. Range is 2.0
                         edge-to-edge, one patch is 2/grid, so ~(0.2, 4.0)
                         covers neighbour-level to whole-image structure.
+        normalize_target: layer-norm each target token (over D) before the
+                        loss. Without it, a handful of high-norm tokens --
+                        CLS, and register-less DINOv2's high-norm artifact
+                        patches -- dominate the mean over all tokens, since
+                        F.smooth_l1_loss averages raw error across every
+                        token indiscriminately. Per-token layer-norm puts
+                        every token on the same scale before the loss sees
+                        it; `pred` needs no matching treatment since
+                        `repr_head` is free to learn output at that scale.
     """
 
     def __init__(
         self,
         encoder: Optional[nn.Module] = None,
-        encoder_name: str = "facebook/dinov2-small",
+        encoder_name: str = "facebook/dinov2-with-registers-small",
         core_layers: int = 4,
         core_heads: int = 8,
         core_mlp: Optional[int] = None,
@@ -90,18 +99,25 @@ class RecurrentWorldModel(nn.Module):
         rope_time_periods: Tuple[float, float] = (1.0, 200.0),
         rope_space_periods: Tuple[float, float] = (0.2, 4.0),
         drop_cls: bool = False,
+        normalize_target: bool = False,
+        pixel_recon: bool = False,
+        objective: str = "repr",
     ):
         super().__init__()
         assert context_mode in ("full", "state")
+        assert objective in ("repr", "pixel")
+        assert objective != "pixel" or pixel_recon, "objective='pixel' needs pixel_recon=True"
 
         if encoder is None:
             from transformers import AutoModel
+            print(f'loading the vision encoder from {encoder_name}')
             encoder = AutoModel.from_pretrained(encoder_name)
         self.encoder = encoder
 
         self.d_enc = encoder.config.hidden_size
         self.patch = encoder.config.patch_size
-        # self.num_register_tokens = encoder.config.num_register_tokens 
+        # 0 for encoders without registers (e.g. plain dinov2-small).
+        self.num_register_tokens = getattr(encoder.config, "num_register_tokens", 0)
         self.dec_dim = dec_dim
         self.freeze_encoder = freeze_encoder
         self.context_mode = context_mode
@@ -110,7 +126,10 @@ class RecurrentWorldModel(nn.Module):
         self.loss_beta = loss_beta
         self.t_periods = rope_time_periods
         self.s_periods = rope_space_periods
-        self.drop_cls = drop_cls
+        self.drop_cls = drop_cls    
+        self.normalize_target = normalize_target
+        self.pixel_recon = pixel_recon
+        self.objective = objective
 
         if freeze_encoder:
             for p in self.encoder.parameters():
@@ -133,6 +152,21 @@ class RecurrentWorldModel(nn.Module):
         self.decoder = CrossAttentionTransformer(dec_dim, dec_heads, dec_layers, dec_mlp)
         self.repr_head = nn.Linear(dec_dim, self.d_enc)
 
+        # reconstructs pixels from the decoder's output (see `forward`). Whether this
+        # trains `core`/`decoder` (objective='pixel') or is just a detached probe
+        # that watches them without shaping them (objective='repr') is decided in
+        # `forward`. Small on purpose: a 2-layer MLP per patch token, not a real
+        # image decoder.
+        if self.pixel_recon:
+            self.recon_head = nn.Sequential(
+                nn.Linear(dec_dim, dec_dim // 2),
+                nn.GELU(),
+                nn.Linear(dec_dim // 2, self.patch * self.patch * 3),
+            )
+            print("=="*5)
+            print("Objective is pixel reconstruction")
+            ic(self.objective)
+
         # the entire content of a query: one learnable vector, shared by every
         # patch of every target frame. Position enters only through rotation.
         self.query_token = nn.Parameter(torch.randn(1, 1, dec_dim) * 0.02)
@@ -143,35 +177,27 @@ class RecurrentWorldModel(nn.Module):
     def _maybe_drop_cls(self, tokens: torch.Tensor) -> torch.Tensor:
         return tokens[..., 1:, :] if self.drop_cls else tokens
 
+    def _drop_registers(self, tokens: torch.Tensor) -> torch.Tensor:
+        """HF layout is [CLS, reg_0 .. reg_{R-1}, patch_0 ..]; registers carry
+        no spatial position and exist only to soak up the high-norm artifact
+        behaviour a register-less DINOv2 dumps into ordinary patch tokens
+        (Darcet et al., 2023). Drop them right here so every downstream
+        consumer -- core, decoder, loss -- sees the same [CLS, patch_0 ..]
+        layout regardless of which encoder variant is loaded."""
+        r = self.num_register_tokens
+        if r == 0:
+            return tokens
+        return torch.cat([tokens[..., :1, :], tokens[..., 1 + r:, :]], dim=-2)
+
     @torch.no_grad()
     def encode(self, frames: torch.Tensor) -> torch.Tensor:
         """(M, 3, H, W) -> (M, 1+P, D) through the online encoder."""
         ctx = torch.no_grad() if self.freeze_encoder else contextlib.nullcontext()
         with ctx:
             h = self.encoder.encoder(self.encoder.embeddings(frames)).last_hidden_state
+            h = self._drop_registers(h)
             return self._maybe_drop_cls(self.encoder.layernorm(h))
-
-    #! we are not using it 
-    # @torch.no_grad()
-    # def encode_target(self, frames: torch.Tensor) -> torch.Tensor:
-    #     """Detached features used as the regression target."""
-    #     enc = self.target_encoder if self.use_ema else self.encoder
-    #     h = enc.encoder(enc.embeddings(frames)).last_hidden_state
-    #     return self._maybe_drop_cls(enc.layernorm(h))
-
-    #! we use frozen encoder os ideally not usefull 
-    # @torch.no_grad()
-    # def update_ema(self, momentum: Optional[float] = None) -> None:
-    #     """Call once per optimizer step when use_ema=True."""
-    #     if not self.use_ema:
-    #         return
-    #     m = self.ema_momentum if momentum is None else momentum
-    #     for pt, ps in zip(self.target_encoder.parameters(), self.encoder.parameters()):
-    #         pt.mul_(m).add_(ps.detach(), alpha=1.0 - m)
-    #     for bt, bs in zip(self.target_encoder.buffers(), self.encoder.buffers()):
-    #         bt.copy_(bs)
-
-    # coordinates
+        
 
     def _grid(self, P: int, device) -> torch.Tensor:
         """(n_tok, 2) spatial coords on [-1, +1]; CLS (if kept) at the centre.
@@ -199,11 +225,18 @@ class RecurrentWorldModel(nn.Module):
         t = tau.to(torch.float32).unsqueeze(-1).unsqueeze(-1).expand(*tau.shape, n_tok, 1)
         return torch.cat([t, sp], dim=-1)
 
+    def _unpatchify(self, patches: torch.Tensor, grid: int) -> torch.Tensor:
+        """(M, grid*grid, patch*patch*3) -> (M, 3, grid*patch, grid*patch)."""
+        p = self.patch
+        M = patches.shape[0]
+        x = patches.reshape(M, grid, grid, p, p, 3)
+        x = x.permute(0, 5, 1, 3, 2, 4)          # M, 3, grid, p, grid, p
+        return x.reshape(M, 3, grid * p, grid * p)
+
     def _rope(self, coords: torch.Tensor, head_dim: int) -> RoPE:
         per = rope_periods(head_dim, self.t_periods, self.s_periods, coords.device)
         return axial_rope(coords, per)
 
-    # forward
 
     def _run_core(self, feats: torch.Tensor, frame_times: torch.Tensor,
                   state: torch.Tensor, t: int, n_tok: int) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -251,7 +284,7 @@ class RecurrentWorldModel(nn.Module):
         memory = torch.stack(memory, dim=1)
 
         return memory
-    
+
     def forward(
         self,
         frames: torch.Tensor,               # (B, N, 3, H, W)
@@ -319,18 +352,51 @@ class RecurrentWorldModel(nn.Module):
             queries, kv, attn_mask,
             q_pos=self._rope(q_coords, hd), kv_pos=self._rope(kv_coords, hd),
         )
-        pred = self.repr_head(decoded).view(B, Tt, n_tok, self.d_enc)
+        # pred = self.repr_head(decoded).view(B, Tt, n_tok, self.d_enc)
 
-        gap = frame_times[:, target_idx] - frame_times[:, target_idx - 1]
+        # gap = frame_times[:, target_idx] - frame_times[:, target_idx - 1]
 
-        loss = self.loss(pred=pred, target=feats, target_idx=target_idx)
+        # # `pred`/`repr_loss` are always computed -- cheap (one linear layer) and
+        # # useful to log even when they are not the training signal.
+        # repr_loss = self.loss(pred=pred, target=feats, target_idx=target_idx)
+        recon_img, recon_loss = None, None
+
+        if self.pixel_recon:
+
+            # objective='pixel': gradients flow into `core`/`decoder` from pixel
+            # space, and `loss` below ignores repr_loss entirely -- this replaces
+            # the representation objective rather than adding to it.
+            # objective='repr': detach, so this is a passive probe on what the
+            # decoder already produces, and cannot influence it.
+            tokens = decoded if self.objective == "pixel" else decoded.detach()
+            # (unlike `encode`'s output, `decoded` already omits CLS when drop_cls is
+            # set -- `_build_queries` never appended `cls_query` in that case.)
+            patch_tokens = tokens if self.drop_cls else tokens[:, 1:]  # (B*Tt, P, Dd)
+            recon_patches = self.recon_head(patch_tokens)              # (B*Tt, P, patch^2*3)
+            recon_img = self._unpatchify(recon_patches, grid=int(round(math.sqrt(P))))
+            recon_img = recon_img.view(B, Tt, *recon_img.shape[1:])    # (B, Tt, 3, H, W)
+
+            target_img = frames[:, target_idx]                         # (B, Tt, 3, H, W)
+            recon_loss = F.mse_loss(recon_img, target_img)
+
+        else:
+            pred = self.repr_head(decoded).view(B, Tt, n_tok, self.d_enc)
+            gap = frame_times[:, target_idx] - frame_times[:, target_idx - 1]
+            repr_loss = self.loss(pred=pred, target=feats, target_idx=target_idx)
+
+        loss = recon_loss if self.objective == "pixel" else repr_loss
+
         return {
             "pred": pred,                # (B, Tt, n_tok, D)
             "memory": memory,            # (B, N,  n_tok, D)
             "state": state,              # (B, n_tok, D)
             "gap": gap,                  # (B, Tt), reported only; RoPE carries it
-            "grid": int(round(math.sqrt(P))),            
-            "loss": loss
+            "grid": int(round(math.sqrt(P))),
+            # "recon": recon_img,          # (B, Tt, 3, H, W) if pixel_recon else None
+            # "target_image": target_img,
+            "repr_loss": repr_loss,
+            # "recon_loss": recon_loss,
+            "loss": loss,
         }
 
     def _build_queries(self, n_rows: int, P: int, dtype) -> torch.Tensor:
@@ -343,7 +409,10 @@ class RecurrentWorldModel(nn.Module):
 
     def loss(self, pred: torch.Tensor, target: torch.Tensor, target_idx: torch.Tensor) -> torch.Tensor:
         """target is `feats` (B, N, n_tok, D); pick out the frames pred was built for."""
-        return F.mse_loss(pred, target[:, target_idx, ...].detach())
+        tgt = target[:, target_idx, ...].detach()
+            # if self.normalize_target:
+            #     tgt = F.layer_norm(tgt, tgt.shape[-1:])
+        return F.smooth_l1_loss(pred, tgt, beta=self.loss_beta)
 
 
     @torch.no_grad()
@@ -395,7 +464,8 @@ class RecurrentWorldModel(nn.Module):
             times.append(context_times[:, t])
 
         hd = self.decoder.head_dim
-        preds = []
+        pixel = self.objective == "pixel"
+        preds, imgs = [], []
         for s in range(gaps.numel()):
             tau = step_times[:, s]
             if self.context_mode == "full":
@@ -409,10 +479,23 @@ class RecurrentWorldModel(nn.Module):
             q_coords = self._coords(tau, P)
 
             q = self._build_queries(B, P, dtype)
-            step = self.repr_head(self.decoder(
+            decoded = self.decoder(
                 q, kv, None,
                 q_pos=self._rope(q_coords, hd), kv_pos=self._rope(kv_coords, hd),
-            ))
+            )
+
+            if pixel:
+                # objective='pixel' never trains repr_head, so rolling out on
+                # images has no use for it. Reconstruct pixels instead, then
+                # re-encode that frame -- the core was only ever trained on
+                # real encoder features, never on repr_head's output.
+                patch_tokens = decoded if self.drop_cls else decoded[:, 1:]
+                recon_patches = self.recon_head(patch_tokens)
+                recon_img = self._unpatchify(recon_patches, grid=int(round(math.sqrt(P))))
+                imgs.append(recon_img)
+                step = self.encode(recon_img)
+            else:
+                step = self.repr_head(decoded)
             preds.append(step)
 
             # feed the prediction back, with its own timestamp
@@ -426,10 +509,121 @@ class RecurrentWorldModel(nn.Module):
             memory.append(out)
             times.append(tau)
 
-        return torch.stack(preds, dim=1)
+        out = {
+            "pred": torch.stack(preds, dim=1),
+            "context_memory": torch.stack(memory, dim=1),
+            "context_feat": feats,
+            "state": state,
+        }
+        if pixel:
+            out["recon"] = torch.stack(imgs, dim=1)          # (B, S, 3, H, W)
+        return out
 
     @torch.no_grad()
-    def step(
+    def teacher_forcing_rollout(
+        self,
+        context: torch.Tensor,                          # (B, C, 3, H, W)
+        targets: torch.Tensor,                           # (B, S, 3, H, W) ground-truth future frames
+        context_times: Optional[torch.Tensor] = None,    # (B, C) float
+        target_times: Optional[torch.Tensor] = None,     # (B, S) float
+        state: Optional[torch.Tensor] = None,
+    ) -> dict:
+        """Image-space teacher-forced rollout. Same per-step query/decode loop as
+        `rollout`, but the core's input at step s is the TRUE encoded target
+        frame `targets[:, s]`, not the model's own reconstruction fed back. This
+        isolates decoder/recon_head error from the core's autoregressive drift --
+        diff `out["recon"]` here against `rollout`'s `recon` on the same clip to
+        see how much of rollout's degradation is drift vs. decoder underfit.
+
+        Requires self.pixel_recon (recon_head must exist).
+        """
+        assert self.pixel_recon, "teacher_forcing_rollout needs pixel_recon=True"
+        self.eval()
+        B, C = context.shape[:2]
+        S = targets.shape[1]
+        device = context.device
+
+        ctx_feats = self.encode(context.reshape(B * C, *context.shape[2:]))
+        ctx_feats = ctx_feats.view(B, C, *ctx_feats.shape[1:])
+        tgt_feats = self.encode(targets.reshape(B * S, *targets.shape[2:]))
+        tgt_feats = tgt_feats.view(B, S, *tgt_feats.shape[1:])
+        n_tok = ctx_feats.shape[2]
+        P = n_tok if self.drop_cls else n_tok - 1
+        dtype = ctx_feats.dtype
+
+        if context_times is None:
+            context_times = torch.arange(C, device=device, dtype=torch.float32)
+            context_times = context_times.unsqueeze(0).expand(B, C)
+        context_times = context_times.to(device=device, dtype=torch.float32)
+
+        if target_times is None:
+            target_times = C + torch.arange(S, device=device, dtype=torch.float32)
+            target_times = target_times.unsqueeze(0).expand(B, S)
+        target_times = target_times.to(device=device, dtype=torch.float32)
+
+        if state is None:
+            state = ctx_feats.new_zeros(B, n_tok, self.d_enc)
+        memory, times = [], []
+        for t in range(C):
+            out, state = self._run_core(ctx_feats, context_times, state, t, n_tok)
+            memory.append(out)
+            times.append(context_times[:, t])
+
+        hd, hdc = self.decoder.head_dim, self.core.head_dim
+        grid = int(round(math.sqrt(P)))
+        imgs = []
+        for s in range(S):
+            tau = target_times[:, s]
+
+            if self.context_mode == "full":
+                kv = torch.stack(memory, dim=1).reshape(B, -1, self.d_enc)
+                kv_tau = torch.stack(times, dim=1)                 # (B, k)
+            else:
+                kv = memory[-1]
+                kv_tau = times[-1].unsqueeze(1)                    # (B, 1)
+            kv = self.decoder_embed(kv)
+            kv_coords = self._coords(kv_tau, P).reshape(B, -1, 3)
+            q_coords = self._coords(tau, P)
+
+            q = self._build_queries(B, P, dtype)
+            decoded = self.decoder(
+                q, kv, None,
+                q_pos=self._rope(q_coords, hd), kv_pos=self._rope(kv_coords, hd),
+            )
+
+            patch_tokens = decoded if self.drop_cls else decoded[:, 1:]
+            recon_patches = self.recon_head(patch_tokens)
+            recon_img = self._unpatchify(recon_patches, grid=grid)
+            imgs.append(recon_img)
+
+            # teacher forcing: core sees the TRUE target frame's encoding, not
+            # its own reconstruction re-encoded
+            prev_tau = times[-1]
+            out, state = self.core(
+                tgt_feats[:, s], state,
+                self._rope(self._coords(tau, P), hdc),
+                self._rope(self._coords(prev_tau, P), hdc),
+            )
+            memory.append(out)
+            times.append(tau)
+
+        # return {
+        #     "recon": torch.stack(imgs, dim=1),           # (B, S, 3, H, W)
+        #     "target_feat": tgt_feats,                     # (B, S, n_tok, D)
+        #     "context_memory": torch.stack(memory, dim=1),
+        #     "state": state,
+        # }
+        return {
+            "recon": torch.stack(imgs, dim=1),           # (B, S, 3, H, W)
+            "target_feat": tgt_feats,                     # (B, S, n_tok, D) ground-truth encoded targets
+            "context_memory": torch.stack(memory, dim=1), # (B, C+S, n_tok, D) core outputs, context + teacher-forced steps
+            "context_feat": ctx_feats,                     # (B, C, n_tok, D) raw encoder features for the context frames
+            "state": state,
+        }
+
+
+    @torch.no_grad()
+    def step(   
         self,
         frame: torch.Tensor,                       # (B, 3, H, W)
         state: Optional[torch.Tensor] = None,
