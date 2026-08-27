@@ -2,7 +2,7 @@
 
 import dataclasses
 import re
-from typing import Any, Optional
+from typing import Any
 import jax.numpy as jnp
 from flax import linen as nn
 # @title Imports
@@ -369,16 +369,7 @@ class RandomStateInit(nn.Module):
     state = 0 * jax.random.normal(key=self.make_rng("default"), shape=batch_shape + shape)
     return state
 
-class DecoderProj(nn.Module):
-  encoder_dim: int
-  hidden_dim: int | None = None
 
-  @nn.compact
-  def __call__(self, x):
-    if self.hidden_dim is not None:
-      x = nn.gelu(nn.Dense(self.hidden_dim, dtype=x.dtype)(x))
-    return nn.Dense(self.encoder_dim, dtype=x.dtype)(x)
-  
 class Detokenizer(nn.Module):
   """Detokenize tokens to pixel-space patches via a learned linear projection."""
   patch_size: tuple[int, int]
@@ -432,27 +423,6 @@ def random_masking(rng_key, tokens, mask_ratio):
   return visible_tokens, inds_restore, mask
 
 
-def context_target_split(num_frames, num_context, rng = None, min_context = 1):
-  """Split a clip of `num_frames` into context and (causal) target indices.
-
-  Frames `[0, num_context)` seed the recurrent state; frames `[num_context, num_frames)`
-  are prediction targets, each conditioned only on the state built from the single
-  frame right before it -- see `VideoSiamMAE.reconstruct_tf`. All-numpy and meant to be
-  computed once on the host (e.g. per training run), since `num_context` fixes the
-  shape `reconstruct_tf` gets jitted against.
-
-  If `rng` (a `np.random.Generator`) is given, `num_context` is instead drawn uniformly
-  from `[min_context, num_frames - 1]`.
-
-  Returns:
-    context_indices: (num_context,) int, frames `[0, num_context)`.
-    target_indices: (num_frames - num_context,) int, frames `[num_context, num_frames)`.
-  """
-  if rng is not None:
-    num_context = int(rng.integers(min_context, num_frames))
-  return np.arange(num_context), np.arange(num_context, num_frames)
-
-
 class VideoSiamMAE(nn.Module):
   """Video Siamese masked autoencoder model."""
 
@@ -460,7 +430,6 @@ class VideoSiamMAE(nn.Module):
   tokenizer: nn.Module
   encoder: nn.Module
   rnn_core: nn.Module
-#   decoder_proj: nn.Module 
   latent_emb_dim: int = 384
 
   # Decoder
@@ -471,7 +440,6 @@ class VideoSiamMAE(nn.Module):
   detokenizer: nn.Module | None = None
   decoder_emb_dim: int = 512
   masking_ratio: float = 0.95
-
 
   def setup(self):
     self.cls_token = self.param('cls_token', nn.initializers.normal(stddev=0.02), (1, self.latent_emb_dim))
@@ -494,139 +462,6 @@ class VideoSiamMAE(nn.Module):
     features, state = self.rnn_core(encoded_frame_tokens, state)
 
     return dict(features=features, state=state)
-
-
-  def _encode_context(self, frames, state=None):
-    """Tokenize `frames`, encode each frame independently, then scan them through the
-    RNN core to build up per-timestep state. Shared by `reconstruct` (source frames)
-    and `reconstruct_tf` (the full causal clip).
-
-    Args:
-      frames: (*b, T, H, W, 3).
-      state: optional initial RNN state; a fresh one is created if None.
-
-    Returns:
-      states: (*b, T, N+1, F), the RNN core output after each frame (N = patches/frame).
-      state: the RNN state after the last frame.
-      token_grid: (h, w), the patch grid of a single frame.
-    """
-    tokens = self.tokenizer(frames)  # (*b, T, h, w, D)
-    *b, num_frames, token_h, token_w, d = tokens.shape
-    tokens = einops.rearrange(tokens, '... h w D -> ... (h w) D')  # (*b, T, N, D)
-
-    cls_token = jnp.broadcast_to(
-        self.cls_token, b + [num_frames, 1, self.cls_token.shape[-1]]
-    )  # (*b, T, 1, D)
-    tokens = jnp.concatenate([cls_token, tokens], axis=-2)  # (*b, T, N+1, D)
-
-    num_tokens = tokens.shape[-2]
-    flat = jnp.reshape(tokens, (np.prod(b) * num_frames, num_tokens, d))
-    encoded = self.encoder(flat)
-    encoded = jnp.reshape(encoded, b + [num_frames, num_tokens, encoded.shape[-1]])
-    # encoded: (*b, T, N+1, E) -- raw vision-encoder tokens, pre-core
-
-    if state is None:
-      state = self.rnn_core.initializer(encoded[..., 0, :, :], batch_shape=tuple(b))
-
-    states = []
-    for t in range(num_frames):
-      out, state = self.rnn_core(encoded[..., t, :, :], state)
-      states.append(out)
-    states = jnp.stack(states, axis=-3)  # (*b, T, N+1, F) -- memory, post-core
-
-    return states, state, (token_h, token_w), encoded
-  # def _encode_context(self, frames, state=None):
-    ...
-    # encoded = self.encoder(flat)
-    # encoded = jnp.reshape(encoded, b + [num_frames, num_tokens, encoded.shape[-1]])
-    # # encoded: (*b, T, N+1, E) -- raw vision-encoder tokens, pre-core
-
-    # if state is None:
-    #   state = self.rnn_core.initializer(encoded[..., 0, :, :], batch_shape=tuple(b))
-
-    # states = []
-    # for t in range(num_frames):
-    #   out, state = self.rnn_core(encoded[..., t, :, :], state)
-    #   states.append(out)
-    # states = jnp.stack(states, axis=-3)  # (*b, T, N+1, F) -- memory, post-core
-
-    # return states, state, (token_h, token_w), encoded
-
-
-  def reconstruct_tf(
-      self,
-      context,
-      target_indices,
-      frame_times=None,
-      state=None,
-  ):
-    """Causal, fully-masked reconstruction: target frame `t` is predicted purely from
-    the recurrent state produced after frame `t - 1`, with no visible patches of its
-    own leaking into the query (100% masking). Mirrors the `context_mode='state'` path
-    of `RecurrentWorldModel.forward` in `rvm_tf.py`; loss is pixel-space `rvm_loss`.
-
-    Use `context_target_split` to build `target_indices` from a clip length and a
-    context length.
-
-    Args:
-      context: (*b, N, H, W, 3), the full clip -- context and target frames together.
-      target_indices: (Tt,) int, indices into N, all >= 1 (each attends to state[t-1]).
-      frame_times: optional (*b, N) absolute frame numbers, bucketed into
-        `delta_embedder` as the gap between a target and the frame its state came from.
-      state: optional recurrent state to seed the scan with.
-
-    Returns:
-      Dictionary with 'reconstructed', 'features', 'state'.
-    """
-    assert self.decoder is not None, 'Decoder must be provided for reconstruction.'
-    target_indices = np.asarray(target_indices)
-    assert np.all(target_indices >= 1), 'target frame 0 has no preceding state'
-
-    states, state, (token_h, token_w) = self._encode_context(context, state)
-    *b, num_frames, num_tokens, _ = states.shape
-    assert np.all(target_indices < num_frames), 'target_indices out of range'
-    num_target_frames = target_indices.shape[0]
-
-    # Decoder queries: 100% masked -- one mask token per patch, plus CLS.
-    mask_cls = jnp.broadcast_to(
-        self.mask_token, b + [num_target_frames, 1, self.mask_token.shape[-1]]
-    )  # (*b, Tt, 1, C)
-    mask_patches = jnp.broadcast_to(
-        self.mask_token,
-        b + [num_target_frames, num_tokens - 1, self.mask_token.shape[-1]],
-    )  # (*b, Tt, N, C)
-
-    latent_posenc = self.latent_posenc((1, token_h, token_w, mask_patches.shape[-1]))
-    latent_posenc = jnp.reshape(
-        latent_posenc, [1, 1, token_h * token_w, latent_posenc.shape[-1]]
-    )  # (1, 1, N, C)
-    mask_patches = mask_patches + jnp.broadcast_to(latent_posenc, mask_patches.shape)
-
-    if self.delta_embedder is not None and frame_times is not None:
-      deltas = frame_times[..., target_indices] - frame_times[..., target_indices - 1]
-      deltas = jnp.clip(deltas.astype(jnp.int32), 0, 63)
-      delta_tokens = self.delta_embedder(jax.nn.one_hot(deltas, 64, axis=-1))  # (*b, Tt, C)
-      mask_patches = mask_patches + delta_tokens[..., jnp.newaxis, :]  # broadcast over N
-
-    to_decode = jnp.concatenate([mask_cls, mask_patches], axis=-2)  # (*b, Tt, N+1, C)
-
-    # KV: only the state right after the preceding frame -- strictly causal, one frame
-    # of history per target (rvm_tf's `context_mode='state'`), not the whole clip.
-    kv_states = states[..., target_indices - 1, :, :]  # (*b, Tt, N+1, F)
-    inputs_kv = self.decoder_embedder(kv_states)  # (*b, Tt, N+1, C)
-
-    decoded = self.decoder(to_decode, inputs_kv=inputs_kv)  # (*b, Tt, N+1, C)
-
-    reconstructed = jnp.reshape(
-        decoded[..., 1:, :], b + [num_target_frames, token_h, token_w, decoded.shape[-1]]
-    )  # (*b, Tt, h, w, C)
-    reconstructed = self.detokenizer(reconstructed)  # (*b, Tt, H, W, 3)
-
-    return {
-        'reconstructed': reconstructed,  # (*b, Tt, H, W, 3)
-        'features': states,  # (*b, N, N_tok, F)
-        'state': state,
-    }
 
   def reconstruct(
       self,
@@ -652,48 +487,79 @@ class VideoSiamMAE(nn.Module):
     if rng_key is None:
       rng_key = self.make_rng('default')
 
-    # Tokenize target frames (source frames are handled by `_encode_context` below)
-    target_tokens = self.tokenizer(target_frames)  # (B, Tt, h, w, D)
+    # Tokenize source and target frames
+    source_tokens = self.tokenizer(source_frames)
+    *_, num_source_frames, _, _, source_tokens_d = source_tokens.shape
+    target_tokens = self.tokenizer(target_frames)
     *b, num_target_frames, target_tokens_h, target_tokens_w, target_tokens_d = (
         target_tokens.shape
     )
 
+    # Flatten source tokens
+    source_tokens = einops.rearrange(source_tokens, '... h w D -> ... (h w) D')
+
+    #   end cls token to source
+    cls_token = jnp.broadcast_to(
+        self.cls_token, b + [num_source_frames, 1, self.cls_token.shape[-1]]
+    )
+    source_tokens = jnp.concatenate([cls_token, source_tokens], axis=-2)
+
     # Mask target tokens
     target_tokens_flat = einops.rearrange(
         target_tokens, '... h w D -> ... (h w) D'
-    )  # (B, Tt, N, D)
+    )
     visible_target, inds_restore, mask = random_masking(
         rng_key, target_tokens_flat, self.masking_ratio
-    )  # visible_target: (B, Tt, k, D); inds_restore, mask: (B, Tt, N, 1); k = int(N*(1-masking_ratio))
-    tokens_mask = mask.copy()
+    )
     cls_token_t = jnp.broadcast_to(
         self.cls_token, b + [num_target_frames, 1, self.cls_token.shape[-1]]
-    )  # (B, Tt, 1, D)
-    target_with_cls = jnp.concatenate([cls_token_t, visible_target], axis=-2)  # (B, Tt, k+1, D)
+    )
+    target_with_cls = jnp.concatenate([cls_token_t, visible_target], axis=-2)
 
-    # Encode source frames and scan them through the RNN core.
-    # encoded_source_tokens, state, _ = self._encode_context(source_frames, state)  # (B, Ts, N+1, F)
-    encoded_source_tokens, state, _, source_feats = self._encode_context(source_frames, state)
+    # Encode source frames
+    num_source_tokens = source_tokens.shape[-2]
+    source_tokens = jnp.reshape(
+        source_tokens,
+        (np.prod(b) * num_source_frames, num_source_tokens, source_tokens_d),
+    )
+    encoded_source_tokens = self.encoder(source_tokens)
+    encoded_source_tokens = jnp.reshape(
+        encoded_source_tokens,
+        b + [num_source_frames, num_source_tokens, encoded_source_tokens.shape[-1]],
+    )
 
+    # Scan encoded source tokens through time with RNN core
+    if state is None:
+      state = self.rnn_core.initializer(
+          encoded_source_tokens[..., 0, :, :],
+          batch_shape=tuple(b),
+      )
+
+    all_encoded_source_tokens = []
+    for t in range(num_source_frames):
+      encoded, state = self.rnn_core(
+          encoded_source_tokens[..., t, :, :], state)
+      all_encoded_source_tokens.append(encoded)
+    encoded_source_tokens = jnp.stack(all_encoded_source_tokens, axis=-3)
 
     # Encode target frames
-    num_target_tokens = target_with_cls.shape[-2]  # k+1
+    num_target_tokens = target_with_cls.shape[-2]
     target_with_cls = jnp.reshape(
         target_with_cls,
         (np.prod(b) * num_target_frames, num_target_tokens, target_tokens_d),
-    )  # (prod(B)*Tt, k+1, D)
-    encoded_targets = self.encoder(target_with_cls)  # (prod(B)*Tt, k+1, E)
+    )
+    encoded_targets = self.encoder(target_with_cls)
     encoded_targets = jnp.reshape(
         encoded_targets,
         b + [num_target_frames, num_target_tokens, encoded_targets.shape[-1]],
-    )  # (B, Tt, k+1, E)
+    )
 
     # Embed target tokens for decoder
-    embedded_target_tokens = self.decoder_embedder(encoded_targets)  # (B, Tt, k+1, C), C = decoder_emb_dim
+    embedded_target_tokens = self.decoder_embedder(encoded_targets)
 
     # Separate cls token
-    target_cls = embedded_target_tokens[..., 0:1, :]  # (B, Tt, 1, C)
-    unmasked_tokens = embedded_target_tokens[..., 1:, :]  # (B, Tt, k, C)
+    target_cls = embedded_target_tokens[..., 0:1, :]
+    unmasked_tokens = embedded_target_tokens[..., 1:, :]
 
     # Concat unmasked tokens with mask tokens and restore order
     mask_tokens = jnp.broadcast_to(
@@ -703,16 +569,16 @@ class VideoSiamMAE(nn.Module):
             inds_restore.shape[-2] - unmasked_tokens.shape[-2],
             self.mask_token.shape[-1],
         ],
-    )  # (B, Tt, N-k, C)
-    shuffled_tokens = jnp.concatenate([unmasked_tokens, mask_tokens], axis=-2)  # (B, Tt, N, C)
+    )
+    shuffled_tokens = jnp.concatenate([unmasked_tokens, mask_tokens], axis=-2)
     unshuffled_tokens = jnp.take_along_axis(
         shuffled_tokens, inds_restore, axis=-2
-    )  # (B, Tt, N, C)
+    )
 
     # Encode target deltas
     if self.delta_embedder is not None and target_deltas is not None:
-      target_deltas_onehot = jax.nn.one_hot(target_deltas, 64, axis=-1)  # (B, Tt, 64)
-      delta_tokens = self.delta_embedder(target_deltas_onehot)[..., jnp.newaxis, :]  # (B, Tt, 1, C)
+      target_deltas_onehot = jax.nn.one_hot(target_deltas, 64, axis=-1)
+      delta_tokens = self.delta_embedder(target_deltas_onehot)[..., jnp.newaxis, :]
     else:
       delta_tokens = None
 
@@ -721,28 +587,28 @@ class VideoSiamMAE(nn.Module):
         1, target_tokens_h, target_tokens_w,
         embedded_target_tokens.shape[-1],
     )
-    latent_posenc = self.latent_posenc(latent_posenc_shape)  # (1, h, w, C)
+    latent_posenc = self.latent_posenc(latent_posenc_shape)
     latent_posenc = jnp.reshape(
         latent_posenc,
         [1, 1, target_tokens_h * target_tokens_w, latent_posenc.shape[-1]],
-    )  # (1, 1, N, C)
-    latent_posenc = jnp.broadcast_to(latent_posenc, unshuffled_tokens.shape)  # (B, Tt, N, C)
+    )
+    latent_posenc = jnp.broadcast_to(latent_posenc, unshuffled_tokens.shape)
 
     if delta_tokens is not None:
-      unshuffled_tokens += delta_tokens  # broadcast over N
+      unshuffled_tokens += delta_tokens
     unshuffled_tokens += latent_posenc
-    to_decode = jnp.concatenate([target_cls, unshuffled_tokens], axis=-2)  # (B, Tt, N+1, C)
+    to_decode = jnp.concatenate([target_cls, unshuffled_tokens], axis=-2)
 
     # Prepare KV from encoded source tokens
     inputs_kv = einops.rearrange(
         encoded_source_tokens, '... T N D -> ... (T N) D'
-    )  # (B, Ts*(N+1), F)
-    inputs_kv = self.decoder_embedder(inputs_kv)  # (B, Ts*(N+1), C)
-    inputs_kv = inputs_kv[..., jnp.newaxis, :, :]  # (B, 1, Ts*(N+1), C)
-    inputs_kv = jnp.tile(inputs_kv, [num_target_frames, 1, 1])  # (B, Tt, Ts*(N+1), C)
+    )
+    inputs_kv = self.decoder_embedder(inputs_kv)
+    inputs_kv = inputs_kv[..., jnp.newaxis, :, :]
+    inputs_kv = jnp.tile(inputs_kv, [num_target_frames, 1, 1])
 
     # Decode
-    decoded = self.decoder(to_decode, inputs_kv=inputs_kv)  # (B, Tt, N+1, C)
+    decoded = self.decoder(to_decode, inputs_kv=inputs_kv)
 
     # Reshape back to image space
     reconstructed = jnp.reshape(
@@ -753,182 +619,56 @@ class VideoSiamMAE(nn.Module):
             target_tokens_w,
             decoded.shape[-1],
         ],
-    )  # (B, Tt, h, w, C)
+    )
     mask = jnp.reshape(
         mask, b + [num_target_frames, target_tokens_h, target_tokens_w, 1]
-    )  # (B, Tt, h, w, 1)
+    )
 
     # Detokenize to pixel space
-    reconstructed = self.detokenizer(reconstructed)  # (B, Tt, H, W, 3)
+    reconstructed = self.detokenizer(reconstructed)
 
     return {
-      'reconstructed': reconstructed,        # (B, Tt, H, W, 3)
-      'mask': mask,                          # (B, Tt, h, w, 1)
-      'memory': encoded_source_tokens,       # (B, Ts, N+1, F) -- RNN-core state per source frame
-      'features': source_feats,              # (B, Ts, N+1, E) -- raw vision-encoder tokens per source frame
-      'state': state,
-      'decoded_representation': decoded[..., 1:, :],
-      'masked_indices': tokens_mask,
-  }
+        'reconstructed': reconstructed,
+        'mask': mask,
+        'features': encoded_source_tokens,
+        'state': state,
+    }
 
 
-  # we will use this method for the ema mdoels, we want the representation after the encoding
-  # as we need to pass the params, it will run with those new params.
-  def encode_target(self, frames):
-    """Full (unmasked) frames -> patch tokens, no RNN core. (B, Tt, N, E)"""
-    t = self.tokenizer(frames)
-    t = einops.rearrange(t, '... h w D -> ... (h w) D')
-    *b, _, _ = t.shape
-    cls = jnp.broadcast_to(self.cls_token, b + [1, self.cls_token.shape[-1]])
-    t = jnp.concatenate([cls, t], axis=-2)
-    encoder_emb = self.encoder(t)[..., 1:, :]
-    # return self.decoder_proj(encoder_emb)
-    return encoder_emb
-
-
-@dataclasses.dataclass(frozen=True)
-class RVMConfig:
-  """Config for `build_model`. Field names mirror `src/models/rvm.py::RVM` where possible.
-
-  `max_delta` is not wired into the model (the delta one-hot table in
-  `VideoSiamMAE.reconstruct` is hardcoded to depth 64), it is kept here only so callers
-  can assert consistency with `RVMDataset(config)["max_delta"]`.
-  """
-
-  variant: str = 'S'  # ViT size, see VIT_SIZES (e.g. 'mu', 'Ti', 'S', 'B', 'L', ...)
-  patch_size: tuple[int, int, int] = (1, 16, 16)  # (t, h, w) kernel for the tokenizer conv
-  frame_size: tuple[int, int] = (256, 256)  # (H, W); sizes the source positional-encoding grid
-  core_layers: int = 4
-  core_heads: int = 8
-  core_mlp: Optional[int] = None  # defaults to 4x encoder hidden size
-  dec_dim: int = 512
-  dec_layers: int = 8
-  dec_heads: int = 16
-  dec_mlp: int = 2048
-  masking_ratio: float = 0.95
-  max_delta: int = 64
-  dtype: Any = jnp.bfloat16  # compute dtype for encoder/core/decoder (params stay fp32)
-
-def build_model(masking_ratio = 1.0) -> VideoSiamMAE:
-  model_variant = 'S'
-  return  VideoSiamMAE(
-    tokenizer=Tokenizer(
-        patch_embedding=PatchEmbedding(patch_size=[1, 16, 16], num_features=384),  # confirmed by checkpoint: encoder dim 384
-        posenc=SincosPosEmb(base_token_shape=[16, 16]),
-    ),
-    encoder=Transformer.from_variant_str(variant_str=model_variant, dtype=jax.numpy.bfloat16),  # checkpoint confirms: 384 dim, 6 heads (kernel [384,6,64]), mlp 1536
-    rnn_core=GatedTransformerCore(
-        transformer=CrossAttentionTransformer(
-            num_layers=4,
-            num_heads=8,         # paper Table 5; if this errors, read true count off the error (see note)
-            num_feats=384,
-            mlp_dim=2048,        # ← THE FIX: checkpoint expects (384, 2048), flat value, not 4×dim
-            dtype=jax.numpy.bfloat16,
-        ),
-        initializer=RandomStateInit(),
-        token_dim=384,
-        state_layer_norm=nn.LayerNorm(epsilon=0.0001, use_scale=True, use_bias=False),
-    ),
-    latent_emb_dim=384,
-    # Decoder: fixed across all sizes — checkpoint confirms 512 dim, 16 heads (kernel [512,16,32]), mlp 2048
-    decoder=CrossAttentionTransformer(
-        num_layers=8,
-        num_heads=16,
-        num_feats=512,
-        mlp_dim=2048,
-        dtype=jax.numpy.bfloat16,
-    ),
-    decoder_embedder=nn.Dense(512),   # checkpoint confirms: kernel (384, 512)
-    delta_embedder=nn.Dense(512),     # checkpoint confirms: kernel (64, 512) — delta is 64-dim Fourier-embedded upstream
-    latent_posenc=SincosPosEmb(),
-    detokenizer=Detokenizer(patch_size=(16, 16), num_features=3),  # checkpoint confirms: (512, 768) = 16·16·3
-    decoder_emb_dim=512,
-    masking_ratio=masking_ratio,
-    # decoder_proj = DecoderProj(encoder_dim = 384, hidden_dim = None)
-)
-
-
-def build_model_L(masking_ratio = 1.0) -> VideoSiamMAE:
-
-  return VideoSiamMAE(
-      tokenizer=Tokenizer(
-          patch_embedding=PatchEmbedding(patch_size=[1, 16, 16], num_features=1024),
-          posenc=SincosPosEmb(base_token_shape=[16, 16]),
-      ),
-      encoder=Transformer.from_variant_str(variant_str='L', dtype=jax.numpy.bfloat16),
-      rnn_core=GatedTransformerCore(
-          transformer=CrossAttentionTransformer(
-              num_layers=4,
-              num_heads=16,
-              num_feats=1024,
-              mlp_dim=4096,
-              dtype=jax.numpy.bfloat16,
-          ),
-          initializer=RandomStateInit(),
-          token_dim=1024,
-          state_layer_norm=nn.LayerNorm(epsilon=0.0001, use_scale=True, use_bias=False),
-      ),
-      latent_emb_dim=1024,
-      # Decoder components
-      decoder=CrossAttentionTransformer(
-          num_layers=8,
-          num_heads=16,
-          num_feats=512,
-          mlp_dim=2048,
-          dtype=jax.numpy.bfloat16,
-      ),
-      decoder_embedder=nn.Dense(512),
-      delta_embedder=nn.Dense(512),
-      latent_posenc=SincosPosEmb(),
-      detokenizer=Detokenizer(patch_size=(16, 16), num_features=3),
-      decoder_emb_dim=512,
-      masking_ratio=masking_ratio,
-  )
-     
-
-
-
-def patchify(imgs, patch_size):
-  """(..., H, W, C) -> (..., H//ph, W//pw, ph*pw*C), inverse of `Detokenizer`/`unpatchify`."""
-  ph, pw = patch_size
-  return einops.rearrange(imgs, '... (H h) (W w) C -> ... H W (h w C)', h=ph, w=pw)
-
-
-def unpatchify(patches, patch_size, num_features=3):
-  """(..., H, W, ph*pw*C) -> (..., H*ph, W*pw, C), inverse of `patchify`."""
-  ph, pw = patch_size
-  return einops.rearrange(
-      patches, '... H W (h w C) -> ... (H h) (W w) C', h=ph, w=pw, C=num_features
-  )
-
-
-def rvm_loss(out, target_frames, patch_size, masked_only=False, norm_pix=False):
-  """L2 reconstruction loss; mirrors `src/models/rvm.py::RVM.loss`.
-
-  Args:
-    out: output dict of `VideoSiamMAE.reconstruct`, needs 'reconstructed' (B, Tt, H, W, C)
-      and 'mask' (B, Tt, H//ph, W//pw, 1), 1 = masked/dropped token.
-    target_frames: ground-truth target frames, (B, Tt, H, W, C).
-    patch_size: (ph, pw), must match the tokenizer/detokenizer patch size.
-    masked_only: if True, average only over masked (dropped) patches, as in MAE/SiamMAE.
-    norm_pix: if True, regress to per-patch mean/std-normalized pixels, as in MAE.
-  """
-  gt = patchify(target_frames, patch_size).astype(jnp.float32)
-  pred = patchify(out['reconstructed'], patch_size).astype(jnp.float32)
-
-  if norm_pix:
-    mu = gt.mean(axis=-1, keepdims=True)
-    var = gt.var(axis=-1, keepdims=True)
-    gt = (gt - mu) / jnp.sqrt(var + 1e-6)
-
-  per_patch = jnp.mean((pred - gt) ** 2, axis=-1)  # (B, Tt, H//ph, W//pw)
-
-  if not masked_only:
-    return jnp.mean(per_patch)
-
-  mask = out['mask'][..., 0]  # (B, Tt, H//ph, W//pw)
-  return jnp.sum(per_patch * mask) / jnp.clip(jnp.sum(mask), min=1.0)
 
 
 if __name__ == '__main__':
-    model = build_model(RVMConfig(variant='L', frame_size=(256, 256)))
+    model = VideoSiamMAE(
+        tokenizer=Tokenizer(
+            patch_embedding=PatchEmbedding(patch_size=[1, 16, 16], num_features=1024),
+            posenc=SincosPosEmb(base_token_shape=[16, 16]),
+        ),
+        encoder=Transformer.from_variant_str(variant_str='L', dtype=jax.numpy.bfloat16),
+        rnn_core=GatedTransformerCore(
+            transformer=CrossAttentionTransformer(
+                num_layers=4,
+                num_heads=16,
+                num_feats=1024,
+                mlp_dim=4096,
+                dtype=jax.numpy.bfloat16,
+            ),
+            initializer=RandomStateInit(),
+            token_dim=1024,
+            state_layer_norm=nn.LayerNorm(epsilon=0.0001, use_scale=True, use_bias=False),
+        ),
+        latent_emb_dim=1024,
+        # Decoder components
+        decoder=CrossAttentionTransformer(
+            num_layers=8,
+            num_heads=16,
+            num_feats=512,
+            mlp_dim=2048,
+            dtype=jax.numpy.bfloat16,
+        ),
+        decoder_embedder=nn.Dense(512),
+        delta_embedder=nn.Dense(512),
+        latent_posenc=SincosPosEmb(),
+        detokenizer=Detokenizer(patch_size=(16, 16), num_features=3),
+        decoder_emb_dim=512,
+        masking_ratio=0.95,
+    )

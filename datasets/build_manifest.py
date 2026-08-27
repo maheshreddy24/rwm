@@ -24,9 +24,9 @@ Usage:
         --path_root /home/rvm --num_workers 32
 
     python build_manifest.py \
-        --input datasets/test_ssv2_kine.csv \
-        --input datasets/ego4d_test.csv:ego4d \
-        --out datasets/test_manifest.csv \
+        --input test_ssv2_kine.csv \
+        --input ego4d_test.csv:ego4d \
+        --out test_manifest.csv \
         --path_root /home/rvm --num_workers 32
 """
 

@@ -325,7 +325,7 @@ class RecurrentWorldModel(nn.Module):
         # # `pred`/`repr_loss` are always computed -- cheap (one linear layer) and
         # # useful to log even when they are not the training signal.
         # repr_loss = self.loss(pred=pred, target=feats, target_idx=target_idx)
-        recon_img, recon_loss, repr_loss = None, None, None
+        recon_img, recon_loss = None, None
 
         if self.pixel_recon:
 

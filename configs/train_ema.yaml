@@ -9,8 +9,8 @@ model:
   dec_layers: 3
   dec_heads: 16
   dec_mlp: 768
-  objective: pixel
-  pixel_recon: True
+  objective: repr
+  pixel_recon: False
 
 
 dataset:
@@ -20,10 +20,10 @@ dataset:
     min_stride: 5 
     max_stride: 10
     target_frames: 5
-    target_min_stride: 20
-    target_max_stride: 30
+    target_min_stride: 30
+    target_max_stride: 40
 
-    min_duration_frames: 200
+    min_duration_frames: 250
     frame_size: [252, 252]   # must match encoder patch_size (14) so H/patch is an integer grid
     # Keyed by the `source` column in the manifest.
     sources:
@@ -35,7 +35,7 @@ dataset:
         weight: 1.0
       ego4d:
         mode: segment
-        segment_seconds: 180
+        segment_seconds: 250
         weight: 1.0
         # max_windows: 40   # optional cap per video
     default_source:
@@ -47,10 +47,10 @@ dataset:
     context_frames: 5
     min_stride: 5
     max_stride: 10
-    target_frames: 5
-    target_min_stride: 20
-    target_max_stride: 30
-    min_duration_frames: 200
+    target_frames: 3
+    target_min_stride: 30
+    target_max_stride: 40
+    min_duration_frames: 250
     deterministic: false
     sources:
       ssv2:
@@ -61,20 +61,20 @@ dataset:
         weight: 1.0
       ego4d:
         mode: segment
-        segment_seconds: 180
+        segment_seconds: 250
         weight: 1.0
     default_source:
       mode: single
       weight: 1.0
 
 dataloader:
-  batch_size: 64
+  batch_size: 96
   num_workers: 15
   pin_memory: true
   prefetch_factor: 4
 
 trainer:
-  checkpoint_dir: checkpoints/checkpoints_rwm_recon
+  checkpoint_dir: checkpoints/checkpoints_rwm
   lr: 1.5e-4          # recurrent core + decoder + repr_head
   weight_decay: 0.05
   betas: [0.9, 0.95]
@@ -86,13 +86,13 @@ trainer:
   warmup_ratio: 0.05
   min_lr_ratio: 0.01
 
-  normalize_target: true
+  normalize_target: false
 
-  save_every_steps: 1000
-  eval_every_steps: 1000
+  save_every_steps: 300
+  eval_every_steps: 300
 
   amp: true
-  log_interval: 200
+  log_interval: 100
 
   wandb_project: rwm
   wandb_name: null
