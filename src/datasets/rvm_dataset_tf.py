@@ -189,50 +189,31 @@ class RVMDataset(Dataset):
             return None
 
     def _sample_indices(self, win_start, win_end, total_frames):
-        """Pick `roll_out` indices inside [win_start, win_end). Each gap between
-        consecutive frames is drawn independently (no fixed clip stride): the first
-        `context_frames - 1` gaps from [min_stride, max_stride], the remaining
-        `target_frames` gaps from [target_min_stride, target_max_stride]. Without
-        `context_frames` set, every gap uses [min_stride, max_stride]."""
+        """Pick `roll_out` indices inside [win_start, win_end), with each gap
+        between consecutive frames drawn independently (no fixed clip stride)."""
         win_end = min(win_end, total_frames)
         available = win_end - win_start
         if available < self.roll_out:
             return None
 
         n_gaps = self.roll_out - 1
-        if n_gaps <= 0:
-            return np.clip(win_start + np.arange(self.roll_out), 0, total_frames - 1)
-
-        if self.context_frames is not None:
-            n_ctx_gaps = max(0, min(self.context_frames - 1, n_gaps))
-        else:
-            n_ctx_gaps = n_gaps
-        n_tgt_gaps = n_gaps - n_ctx_gaps
-
-        # Cap strides so the worst case (all gaps at their max) still fits the window.
-        max_span = available - 1
-        ctx_hi, tgt_hi = self.max_stride, self.target_max_stride
-        worst_case = n_ctx_gaps * ctx_hi + n_tgt_gaps * tgt_hi
-        if worst_case > max_span:
-            scale = max_span / worst_case
-            ctx_hi = max(1, int(ctx_hi * scale))
-            tgt_hi = max(1, int(tgt_hi * scale))
-        ctx_lo = min(self.min_stride, ctx_hi)
-        tgt_lo = min(self.target_min_stride, tgt_hi)
 
         if self.deterministic:
-            ctx_stride, tgt_stride = ctx_hi, tgt_hi
-            span = n_ctx_gaps * ctx_stride + n_tgt_gaps * tgt_stride
+            stride = self.max_stride
+            span = n_gaps * stride
+            if span >= available:
+                stride = max(1, (available - 1) // n_gaps)
+                span = n_gaps * stride
             offset = (available - span) // 2  # window center
-            strides = np.concatenate(
-                [np.full(n_ctx_gaps, ctx_stride, dtype=np.int64), np.full(n_tgt_gaps, tgt_stride, dtype=np.int64)]
-            )
-            indices = win_start + offset + np.concatenate([[0], np.cumsum(strides)])
+            indices = win_start + offset + np.arange(self.roll_out) * stride
             return np.clip(indices, 0, total_frames - 1)
 
-        ctx_strides = self.rng.integers(ctx_lo, ctx_hi + 1, size=n_ctx_gaps)
-        tgt_strides = self.rng.integers(tgt_lo, tgt_hi + 1, size=n_tgt_gaps)
-        strides = np.concatenate([ctx_strides, tgt_strides])
+        # Cap strides so the worst case (all gaps at max) still fits the window.
+        max_possible = max(1, (available - 1) // n_gaps)
+        hi = min(self.max_stride, max_possible)
+        lo = min(self.min_stride, hi)
+
+        strides = self.rng.integers(lo, hi + 1, size=n_gaps)
         span = int(strides.sum())
         offset = int(self.rng.integers(0, available - span))
 
