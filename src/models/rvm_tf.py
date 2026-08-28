@@ -348,7 +348,7 @@ class RecurrentWorldModel(nn.Module):
         else:
             pred = self.repr_head(decoded).view(B, Tt, n_tok, self.d_enc)
             gap = frame_times[:, target_idx] - frame_times[:, target_idx - 1]
-            repr_loss = self.loss(pred=pred, target=feats, target_idx=target_idx)
+            repr_loss = self.loss(pred=pred[:, :, 1:, :], target=feats[:, :, 1:, :], target_idx=target_idx) # without cls tokens
 
         loss = recon_loss if self.objective == "pixel" else repr_loss
 
