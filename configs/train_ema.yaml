@@ -30,6 +30,9 @@ dataset:
       ssv2:
         mode: single
         weight: 1.0
+        target_min_stride: 8
+        target_max_stride: 10
+        min_duration_frames: 75
       kinetics:
         mode: single
         weight: 1.0
@@ -37,7 +40,7 @@ dataset:
         mode: segment
         segment_seconds: 250
         weight: 1.0
-        # max_windows: 40   # optional cap per video
+        # max_windows: 40   # optional cap per videos
     default_source:
       mode: single
       weight: 1.0
@@ -56,6 +59,9 @@ dataset:
       ssv2:
         mode: single
         weight: 1.0
+        target_min_stride: 8
+        target_max_stride: 10
+        min_duration_frames: 75
       kinetics:
         mode: single
         weight: 1.0

@@ -44,6 +44,10 @@ class RVMDataset(Dataset):
                                    segment_seconds: chunk length for "segment" (default 180)
                                    max_windows:     optional cap on windows per video
                                    weight:          sampling weight for make_weighted_sampler
+                                   min_stride, max_stride, target_min_stride,
+                                   target_max_stride, min_duration_frames:
+                                                    per-source overrides of the
+                                                    dataset-level settings below
                                unlisted sources fall back to `default_source`
         default_source:        rules for any source not in `sources` (default: single, w=1)
         roll_out:              frames per clip, V-JEPA 2.1 style (default 16)
@@ -93,9 +97,6 @@ class RVMDataset(Dataset):
         self.sources = config.get("sources", {}) or {}
         self.default_source = config.get("default_source", self.DEFAULT_SOURCE)
 
-        # A window must be long enough to hold one stride-1 clip.
-        self.min_window = max(self.min_duration, self.roll_out)
-
         # rng is created lazily so each dataloader worker gets a distinct stream.
         self._rng = None
 
@@ -112,7 +113,15 @@ class RVMDataset(Dataset):
         return self._rng
 
     def _rules_for(self, source):
-        return {**self.DEFAULT_SOURCE, **self.default_source, **self.sources.get(source, {})}
+        base = {
+            **self.DEFAULT_SOURCE,
+            "min_stride": self.min_stride,
+            "max_stride": self.max_stride,
+            "target_min_stride": self.target_min_stride,
+            "target_max_stride": self.target_max_stride,
+            "min_duration_frames": self.min_duration,
+        }
+        return {**base, **self.default_source, **self.sources.get(source, {})}
 
     def _build_index(self):
         stats = {}
@@ -132,25 +141,26 @@ class RVMDataset(Dataset):
                     label = -1
 
                 entry = stats.setdefault(source, {"videos": 0, "skipped": 0, "windows": 0})
-                if num_frames < self.min_window:
+                rules = self._rules_for(source)
+                min_window = max(int(rules["min_duration_frames"]), self.roll_out)
+                if num_frames < min_window:
                     entry["skipped"] += 1
                     continue
                 entry["videos"] += 1
 
-                rules = self._rules_for(source)
                 before = len(self.windows)
 
                 if rules["mode"] == "segment":
                     seconds = float(rules.get("segment_seconds", 180.0))
                     seg = int(round(seconds * fps)) if fps > 0 else num_frames
-                    seg = max(seg, self.min_window)
+                    seg = max(seg, min_window)
                     n_seg = max(1, num_frames // seg)
                     if rules.get("max_windows"):
                         n_seg = min(n_seg, int(rules["max_windows"]))
                     # Spread evenly so the tail is absorbed rather than orphaned.
                     bounds = np.linspace(0, num_frames, n_seg + 1).round().astype(int)
                     for start, end in zip(bounds[:-1], bounds[1:]):
-                        if end - start >= self.min_window:
+                        if end - start >= min_window:
                             self.windows.append(
                                 ClipWindow(path, int(start), int(end), source, label)
                             )
@@ -188,10 +198,12 @@ class RVMDataset(Dataset):
             print(f"[RVMDataset] failed to open {fname}: {e}")
             return None
 
-    def _sample_indices(self, win_start, win_end, total_frames):
-        """Pick `roll_out` indices inside [win_start, win_end), with each gap
+    def _sample_indices(self, window, total_frames):
+        """Pick `roll_out` indices inside [window.start, window.end), with each gap
         between consecutive frames drawn independently (no fixed clip stride)."""
-        win_end = min(win_end, total_frames)
+        rules = self._rules_for(window.source)
+        win_start = window.start
+        win_end = min(window.end, total_frames)
         available = win_end - win_start
         if available < self.roll_out:
             return None
@@ -199,7 +211,7 @@ class RVMDataset(Dataset):
         n_gaps = self.roll_out - 1
 
         if self.deterministic:
-            stride = self.max_stride
+            stride = int(rules["max_stride"])
             span = n_gaps * stride
             if span >= available:
                 stride = max(1, (available - 1) // n_gaps)
@@ -208,12 +220,25 @@ class RVMDataset(Dataset):
             indices = win_start + offset + np.arange(self.roll_out) * stride
             return np.clip(indices, 0, total_frames - 1)
 
+        # The first `context_frames - 1` gaps use [min_stride, max_stride]; the
+        # remaining `target_frames` gaps use [target_min_stride, target_max_stride].
+        if self.context_frames is not None and self.target_frames > 0:
+            n_context_gaps = self.context_frames - 1
+            n_target_gaps = self.target_frames
+        else:
+            n_context_gaps = n_gaps
+            n_target_gaps = 0
+
         # Cap strides so the worst case (all gaps at max) still fits the window.
         max_possible = max(1, (available - 1) // n_gaps)
-        hi = min(self.max_stride, max_possible)
-        lo = min(self.min_stride, hi)
+        ctx_hi = min(int(rules["max_stride"]), max_possible)
+        ctx_lo = min(int(rules["min_stride"]), ctx_hi)
+        tgt_hi = min(int(rules["target_max_stride"]), max_possible)
+        tgt_lo = min(int(rules["target_min_stride"]), tgt_hi)
 
-        strides = self.rng.integers(lo, hi + 1, size=n_gaps)
+        ctx_strides = self.rng.integers(ctx_lo, ctx_hi + 1, size=n_context_gaps)
+        tgt_strides = self.rng.integers(tgt_lo, tgt_hi + 1, size=n_target_gaps)
+        strides = np.concatenate([ctx_strides, tgt_strides])
         span = int(strides.sum())
         offset = int(self.rng.integers(0, available - span))
 
@@ -283,10 +308,12 @@ class RVMDataset(Dataset):
             return None
 
         total_frames = len(vr)
-        if total_frames < self.min_window:
+        rules = self._rules_for(window.source)
+        min_window = max(int(rules["min_duration_frames"]), self.roll_out)
+        if total_frames < min_window:
             return None
 
-        sampled_indices = self._sample_indices(window.start, window.end, total_frames)
+        sampled_indices = self._sample_indices(window, total_frames)
         if sampled_indices is None:
             return None
 
