@@ -111,6 +111,12 @@ class RVMDataset(Dataset):
         self.sources = config.get("sources", {}) or {}
         self.default_source = config.get("default_source", self.DEFAULT_SOURCE)
 
+        # Decoding at native (often 1080p/4K) resolution just to immediately
+        # RandomResizedCrop + resize down to frame_size wastes most of the decode.
+        # Decode at the smallest short side that still avoids upsampling in the
+        # worst case (RRC_SCALE's smallest crop, relative to frame_size).
+        self.decode_short_side = int(math.ceil(min(self.frame_size) / math.sqrt(RRC_SCALE[0])))
+
         # rng is created lazily so each dataloader worker gets a distinct stream.
         self._rng = None
 
@@ -222,11 +228,29 @@ class RVMDataset(Dataset):
 
     # ------------------------------------------------------------------ video
 
+    def _decode_dims(self, width, height):
+        """Scaled (width, height) so the short side is `decode_short_side`,
+        preserving aspect ratio (sources mix landscape/portrait/small clips).
+        Never upscales -- (-1, -1) tells decord to keep native size."""
+        short_side = min(width, height)
+        if short_side <= self.decode_short_side:
+            return -1, -1
+        scale = self.decode_short_side / short_side
+        # Round to even: some codecs' chroma subsampling requires it.
+        dw = max(2, round(width * scale / 2) * 2)
+        dh = max(2, round(height * scale / 2) * 2)
+        return dw, dh
+
     def _open_video(self, fname):
         if not os.path.exists(fname):
             return None
         try:
-            return VideoReader(fname, num_threads=1, ctx=cpu(0))
+            cap = cv2.VideoCapture(fname)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+            dw, dh = self._decode_dims(width, height) if width > 0 and height > 0 else (-1, -1)
+            return VideoReader(fname, num_threads=1, ctx=cpu(0), width=dw, height=dh)
         except Exception as e:
             print(f"[RVMDataset] failed to open {fname}: {e}")
             return None
@@ -321,6 +345,15 @@ class RVMDataset(Dataset):
             top, left, crop_h, crop_w = self._random_resized_crop_params(H, W)
             do_flip = self.rng.random() < 0.5
 
+        # INTER_AREA is correct for shrinking (the common case now that decode
+        # already targets ~frame_size) but degrades to near-nearest-neighbor when
+        # enlarging, which the smallest RRC crops can still do -- pick per-crop.
+        interpolation = (
+            cv2.INTER_AREA
+            if crop_h >= self.frame_size[0] and crop_w >= self.frame_size[1]
+            else cv2.INTER_LINEAR
+        )
+
         out = np.empty((T, self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
         for t in range(T):
             frame = buffer[t, top : top + crop_h, left : left + crop_w]
@@ -328,7 +361,7 @@ class RVMDataset(Dataset):
             frame = cv2.resize(
                 frame,
                 (self.frame_size[1], self.frame_size[0]),
-                interpolation=cv2.INTER_CUBIC,
+                interpolation=interpolation,
             )
             if do_flip:
                 frame = frame[:, ::-1]
