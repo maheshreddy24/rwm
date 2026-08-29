@@ -17,22 +17,20 @@ dataset:
   train:
     manifest: /home/rvm/datasets/train_manifest.csv
     context_frames: 5
-    min_stride: 5 
-    max_stride: 10
+    min_stride: 0.2  # seconds
+    max_stride: 0.4  # seconds
     target_frames: 5
-    target_min_stride: 30
-    target_max_stride: 40
+    target_min_stride: 1.0  # seconds
+    target_max_stride: 1.5  # seconds
 
-    min_duration_frames: 250
     frame_size: [252, 252]   # must match encoder patch_size (14) so H/patch is an integer grid
     # Keyed by the `source` column in the manifest.
     sources:
       ssv2:
         mode: single
         weight: 1.0
-        target_min_stride: 8
-        target_max_stride: 10
-        min_duration_frames: 75
+        target_min_stride: 0.2  # seconds; ssv2 clips run ~3s, too short for the default target stride
+        target_max_stride: 0.3  # seconds
       kinetics:
         mode: single
         weight: 1.0
@@ -48,20 +46,18 @@ dataset:
     manifest: /home/rvm/datasets/test_manifest.csv
     frame_size: [252, 252]
     context_frames: 5
-    min_stride: 5
-    max_stride: 10
+    min_stride: 0.2  # seconds
+    max_stride: 0.4  # seconds
     target_frames: 3
-    target_min_stride: 30
-    target_max_stride: 40
-    min_duration_frames: 250
+    target_min_stride: 1.0  # seconds
+    target_max_stride: 1.5  # seconds
     deterministic: false
     sources:
       ssv2:
         mode: single
         weight: 1.0
-        target_min_stride: 8
-        target_max_stride: 10
-        min_duration_frames: 75
+        target_min_stride: 0.2  # seconds
+        target_max_stride: 0.3  # seconds
       kinetics:
         mode: single
         weight: 1.0

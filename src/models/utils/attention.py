@@ -117,7 +117,7 @@ class GatedRecurrentCore(nn.Module):
         self.transformer = CrossAttentionTransformer(d_model, num_heads, num_layers, mlp_dim)
         self.head_dim = self.transformer.head_dim
 
-    def forward(self, x, state, x_pos=None, state_pos=None):
+    def forward(self, x, state, x_pos, state_pos):
         z = torch.sigmoid(self.input_update(x) + self.state_update(state))
         r = torch.sigmoid(self.input_reset(x) + self.state_reset(state))
         h = self.transformer(x, r * self.state_norm(state), None, x_pos, state_pos)

@@ -62,9 +62,9 @@ class RecurrentWorldModel(nn.Module):
                                    tagged tau_{t-1}, i.e. "the summary as of
                                    the last observed frame".
         rope_time_periods: (fastest, slowest) period in the SAME UNITS as
-                        `frame_times`. The default suits gaps of ~1-12 with
-                        clips spanning ~100. If you feed seconds, DINO-world's
-                        range is (1e-2, 1e2).
+                        `frame_times`. `RVMDataset` reports `frame_times` in
+                        seconds, so the default is DINO-world's seconds-scale
+                        range (1e-2, 1e2); rescale it if you feed some other unit.
         rope_space_periods: periods in normalized grid units. Range is 2.0
                         edge-to-edge, one patch is 2/grid, so ~(0.2, 4.0)
                         covers neighbour-level to whole-image structure.
@@ -96,7 +96,7 @@ class RecurrentWorldModel(nn.Module):
         context_mode: str = "full",
         checkpoint_core: bool = False,
         loss_beta: float = 0.1,
-        rope_time_periods: Tuple[float, float] = (1.0, 200.0),
+        rope_time_periods: Tuple[float, float] = (1e-2, 1e2),
         rope_space_periods: Tuple[float, float] = (0.2, 4.0),
         drop_cls: bool = False,
         normalize_target: bool = False,
@@ -240,7 +240,9 @@ class RecurrentWorldModel(nn.Module):
 
     def _run_core(self, feats: torch.Tensor, frame_times: torch.Tensor,
                   state: torch.Tensor, t: int, n_tok: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """One recurrent step with the right time tags on x and on the state."""
+        """One recurrent step with the right time tags on x and on the state.
+        `t` indexes position in the sampled clip; `frame_times[:, t]` is that
+        frame's real timestamp in seconds, which is what actually enters RoPE."""
         hd = self.core.head_dim
         tau_now = frame_times[:, t]
         tau_prev = frame_times[:, max(t - 1, 0)]
@@ -321,7 +323,7 @@ class RecurrentWorldModel(nn.Module):
         # pred = self.repr_head(decoded).view(B, Tt, n_tok, self.d_enc)
 
         # gap = frame_times[:, target_idx] - frame_times[:, target_idx - 1]
-
+    
         # # `pred`/`repr_loss` are always computed -- cheap (one linear layer) and
         # # useful to log even when they are not the training signal.
         # repr_loss = self.loss(pred=pred, target=feats, target_idx=target_idx)

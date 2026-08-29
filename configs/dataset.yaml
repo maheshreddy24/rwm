@@ -2,8 +2,7 @@ train_manifest: /home/rvm/datasets/train_manifest.csv
 test_manifest: /home/rvm/datasets/test_manifest.csv
 
 roll_out: 16
-max_stride: 3
-min_duration_frames: 48
+max_stride: 0.4  # seconds
 frame_size: [256, 256]
 
 # Keyed by the `source` column in the manifest. Match the strings your

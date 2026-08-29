@@ -262,12 +262,12 @@ class Trainer:
         return (per_token * mask).sum() / mask.sum().clamp(min=1.0)
 
     def _forward_batch(self, batch):
-        """(out_dict, loss) for either batch format: tf `context`/`sampled_indices`
+        """(out_dict, loss) for either batch format: tf `context`/`frame_times`
         (RecurrentWorldModel, which computes its own loss) or the older
         `source`/`target`/`target_deltas` (RVM, scored against a teacher target)."""
         if "context" in batch:
             context = batch["context"].to(self.device, non_blocking=True)         # (B, N, C, H, W)
-            frame_times = batch["sampled_indices"].to(self.device, non_blocking=True).float()
+            frame_times = batch["frame_times"].to(self.device, non_blocking=True).float()  # seconds
             target_idx = torch.arange(self.min_context, context.shape[1], device=self.device)
             out = self.model(context, target_idx, frame_times)
             return out, out["loss"] # the loss is from the RWM model not computed here

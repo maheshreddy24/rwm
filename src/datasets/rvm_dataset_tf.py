@@ -1,4 +1,5 @@
 import csv
+import math
 import os
 from dataclasses import dataclass
 
@@ -25,6 +26,7 @@ class ClipWindow:
     end: int
     source: str
     label: int = -1
+    fps: float = 0.0  # from the manifest; <= 0 means unknown, fall back to decord
 
     @property
     def length(self) -> int:
@@ -45,14 +47,14 @@ class RVMDataset(Dataset):
                                    max_windows:     optional cap on windows per video
                                    weight:          sampling weight for make_weighted_sampler
                                    min_stride, max_stride, target_min_stride,
-                                   target_max_stride, min_duration_frames:
+                                   target_max_stride:
                                                     per-source overrides of the
                                                     dataset-level settings below
                                unlisted sources fall back to `default_source`
         default_source:        rules for any source not in `sources` (default: single, w=1)
         roll_out:              frames per clip, V-JEPA 2.1 style (default 16)
-        max_stride:            max frame stride between sampled frames (default 3)
-        min_duration_frames:   windows shorter than this are dropped (default 48)
+        max_stride:            max stride between sampled frames, in seconds -- may
+                               be < 1 (default 0.4)
         frame_size:            (H, W) to resize decoded frames to, default (256, 256)
         deterministic:         eval mode - center crop, no flip, fixed stride, window
                                center start. Set True for the test manifest.
@@ -61,8 +63,8 @@ class RVMDataset(Dataset):
         target_frames:         number of trailing frames sampled with
                                [target_min_stride, target_max_stride] gaps
                                (default: 0, i.e. no separate target segment)
-        target_min_stride:     min stride for target-segment gaps (default: min_stride)
-        target_max_stride:     max stride for target-segment gaps (default: max_stride)
+        target_min_stride:     min stride for target-segment gaps, seconds (default: min_stride)
+        target_max_stride:     max stride for target-segment gaps, seconds (default: max_stride)
 
     Video lengths come from the manifest, so __init__ never opens a video. A clip is
     `roll_out` frames starting at a random offset *inside its window*. If
@@ -72,6 +74,19 @@ class RVMDataset(Dataset):
     (each gap independently). Without them, every gap uses [min_stride, max_stride], as
     before. One RandomResizedCrop + optional hflip is drawn per clip and shared across
     frames, so the crop doesn't jitter.
+
+    All strides are in seconds, converted to a per-video frame gap using that video's
+    fps (from the manifest, falling back to decord if the manifest is missing it) --
+    this is what lets one stride range mean the same thing across sources with
+    different native fps. Each returned sample also carries `frame_times`: the
+    sampled frames' timestamps in seconds (`sampled_indices / fps`), which is what
+    `RecurrentWorldModel` expects for its RoPE time axis. `sampled_indices` remains
+    the raw frame indices, since those are what decord needs to decode the clip.
+
+    There is no `min_duration_frames` setting: a window only exists to be sampled at
+    [min_stride, max_stride] gaps, so the minimum length it needs is derived from
+    those strides (worst case, every gap at its max) rather than configured
+    separately and kept in sync by hand.
     """
 
     DEFAULT_SOURCE = {"mode": "single", "weight": 1.0}
@@ -84,11 +99,10 @@ class RVMDataset(Dataset):
             self.roll_out = self.context_frames + self.target_frames
         else:
             self.roll_out = config.get("roll_out", 16)  # inspired from V-JEPA 2.1
-        self.min_stride = config.get("min_stride", 5)
-        self.max_stride = config.get("max_stride", 12)  # 12 fps, 3 stride --> 3 * 16 = 48
+        self.min_stride = config.get("min_stride", 0.2)   # seconds
+        self.max_stride = config.get("max_stride", 0.4)   # seconds
         self.target_min_stride = config.get("target_min_stride", self.min_stride)
         self.target_max_stride = config.get("target_max_stride", self.max_stride)
-        self.min_duration = config.get("min_duration_frames", 80)
         self.frame_size = tuple(config.get("frame_size", FRAME_SIZE))
         self.deterministic = (
             config.get("deterministic", False) if deterministic is None else deterministic
@@ -119,9 +133,28 @@ class RVMDataset(Dataset):
             "max_stride": self.max_stride,
             "target_min_stride": self.target_min_stride,
             "target_max_stride": self.target_max_stride,
-            "min_duration_frames": self.min_duration,
         }
         return {**base, **self.default_source, **self.sources.get(source, {})}
+
+    def _gap_counts(self):
+        """(n_context_gaps, n_target_gaps) -- how `roll_out - 1` gaps split between
+        the context and target segments. Shared by stride sampling and by the
+        minimum-window-length check below, so the split is defined once."""
+        if self.context_frames is not None and self.target_frames > 0:
+            return self.context_frames - 1, self.target_frames
+        return self.roll_out - 1, 0
+
+    def _min_required_frames(self, rules, fps):
+        """Frames a window needs so the worst case -- every gap at its max
+        stride -- still fits, instead of `_sample_indices` silently capping
+        strides below what was configured."""
+        if fps <= 0:
+            return self.roll_out
+        n_context_gaps, n_target_gaps = self._gap_counts()
+        span_seconds = (
+            n_context_gaps * rules["max_stride"] + n_target_gaps * rules["target_max_stride"]
+        )
+        return max(self.roll_out, int(math.ceil(span_seconds * fps)) + 1)
 
     def _build_index(self):
         stats = {}
@@ -142,7 +175,7 @@ class RVMDataset(Dataset):
 
                 entry = stats.setdefault(source, {"videos": 0, "skipped": 0, "windows": 0})
                 rules = self._rules_for(source)
-                min_window = max(int(rules["min_duration_frames"]), self.roll_out)
+                min_window = self._min_required_frames(rules, fps)
                 if num_frames < min_window:
                     entry["skipped"] += 1
                     continue
@@ -162,10 +195,10 @@ class RVMDataset(Dataset):
                     for start, end in zip(bounds[:-1], bounds[1:]):
                         if end - start >= min_window:
                             self.windows.append(
-                                ClipWindow(path, int(start), int(end), source, label)
+                                ClipWindow(path, int(start), int(end), source, label, fps)
                             )
                 else:
-                    self.windows.append(ClipWindow(path, 0, num_frames, source, label))
+                    self.windows.append(ClipWindow(path, 0, num_frames, source, label, fps))
 
                 entry["windows"] += len(self.windows) - before
 
@@ -198,9 +231,11 @@ class RVMDataset(Dataset):
             print(f"[RVMDataset] failed to open {fname}: {e}")
             return None
 
-    def _sample_indices(self, window, total_frames):
+    def _sample_indices(self, window, total_frames, fps):
         """Pick `roll_out` indices inside [window.start, window.end), with each gap
-        between consecutive frames drawn independently (no fixed clip stride)."""
+        between consecutive frames drawn independently (no fixed clip stride).
+        Strides are configured in seconds; `fps` converts them to this video's
+        frame gaps."""
         rules = self._rules_for(window.source)
         win_start = window.start
         win_end = min(window.end, total_frames)
@@ -208,10 +243,13 @@ class RVMDataset(Dataset):
         if available < self.roll_out:
             return None
 
+        def to_frames(seconds):
+            return max(1, round(seconds * fps))
+
         n_gaps = self.roll_out - 1
 
         if self.deterministic:
-            stride = int(rules["max_stride"])
+            stride = to_frames(rules["max_stride"])
             span = n_gaps * stride
             if span >= available:
                 stride = max(1, (available - 1) // n_gaps)
@@ -222,19 +260,14 @@ class RVMDataset(Dataset):
 
         # The first `context_frames - 1` gaps use [min_stride, max_stride]; the
         # remaining `target_frames` gaps use [target_min_stride, target_max_stride].
-        if self.context_frames is not None and self.target_frames > 0:
-            n_context_gaps = self.context_frames - 1
-            n_target_gaps = self.target_frames
-        else:
-            n_context_gaps = n_gaps
-            n_target_gaps = 0
+        n_context_gaps, n_target_gaps = self._gap_counts()
 
         # Cap strides so the worst case (all gaps at max) still fits the window.
         max_possible = max(1, (available - 1) // n_gaps)
-        ctx_hi = min(int(rules["max_stride"]), max_possible)
-        ctx_lo = min(int(rules["min_stride"]), ctx_hi)
-        tgt_hi = min(int(rules["target_max_stride"]), max_possible)
-        tgt_lo = min(int(rules["target_min_stride"]), tgt_hi)
+        ctx_hi = min(to_frames(rules["max_stride"]), max_possible)
+        ctx_lo = min(to_frames(rules["min_stride"]), ctx_hi)
+        tgt_hi = min(to_frames(rules["target_max_stride"]), max_possible)
+        tgt_lo = min(to_frames(rules["target_min_stride"]), tgt_hi)
 
         ctx_strides = self.rng.integers(ctx_lo, ctx_hi + 1, size=n_context_gaps)
         tgt_strides = self.rng.integers(tgt_lo, tgt_hi + 1, size=n_target_gaps)
@@ -309,11 +342,12 @@ class RVMDataset(Dataset):
 
         total_frames = len(vr)
         rules = self._rules_for(window.source)
-        min_window = max(int(rules["min_duration_frames"]), self.roll_out)
+        fps = window.fps if window.fps > 0 else float(vr.get_avg_fps())
+        min_window = self._min_required_frames(rules, fps)
         if total_frames < min_window:
             return None
 
-        sampled_indices = self._sample_indices(window, total_frames)
+        sampled_indices = self._sample_indices(window, total_frames, fps)
         if sampled_indices is None:
             return None
 
@@ -327,7 +361,8 @@ class RVMDataset(Dataset):
         frames = buffer.astype(np.float32) / 255.0  # [roll_out, H, W, 3]
         frames = torch.from_numpy(frames).permute(0, 3, 1, 2).contiguous()  # [roll_out, C, H, W]
 
-        return frames, torch.from_numpy(sampled_indices.astype(np.int64))
+        frame_times = torch.from_numpy((sampled_indices / fps).astype(np.float32))  # seconds
+        return frames, torch.from_numpy(sampled_indices.astype(np.int64)), frame_times
 
     # ------------------------------------------------------------------ dunder
 
@@ -338,10 +373,11 @@ class RVMDataset(Dataset):
             sample = self._load_frames(window)
 
             if sample is not None:
-                context, sampled_indices = sample
+                context, sampled_indices, frame_times = sample
                 return {
                     "context": context,
                     "sampled_indices": sampled_indices,
+                    "frame_times": frame_times,
                     "source": window.source,
                     "label": window.label,
                 }
@@ -359,10 +395,12 @@ class RVMDataset(Dataset):
             dtype=torch.float32,
         )
         sampled_indices = torch.arange(self.roll_out, dtype=torch.long)
+        frame_times = sampled_indices.to(torch.float32)
 
         return {
             "context": context,
             "sampled_indices": sampled_indices,
+            "frame_times": frame_times,
             "source": "dummy",
             "label": -1,
         }
@@ -399,6 +437,7 @@ class RVMDataset(Dataset):
         return {
             "context": torch.stack([item["context"] for item in batch], dim=0),         # [B, roll_out, C, H, W]
             "sampled_indices": torch.stack([item["sampled_indices"] for item in batch], dim=0),  # [B, roll_out]
+            "frame_times": torch.stack([item["frame_times"] for item in batch], dim=0),  # [B, roll_out], seconds
             "source": [item["source"] for item in batch],
             "label": torch.tensor([item["label"] for item in batch], dtype=torch.long),  # [B], -1 = unlabelled
         }
