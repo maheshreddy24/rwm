@@ -1,0 +1,95 @@
+seed: 42
+
+model:
+  encoder_name: facebook/dinov2-with-registers-large
+  context_mode: state
+  core_layers: 4
+  core_heads: 8
+  dec_dim: 512
+  dec_layers: 3
+  dec_heads: 16
+  dec_mlp: 768
+  loss_beta: 0.1
+  rope_time_periods: [0.01, 100.0]
+
+dataset:
+  train:
+    manifest: /home/rvm/datasets/train_manifest.csv
+    context_frames: 5
+    min_stride: 0.2  # seconds
+    max_stride: 0.4  # seconds
+    target_frames: 5
+    target_min_stride: 1.0  # seconds
+    target_max_stride: 1.5  # seconds
+
+    frame_size: [224, 224]   # CLS-only: no patch grid to keep square, just the encoder's native resolution
+    sources:
+      ssv2:
+        mode: single
+        weight: 1.0
+        target_min_stride: 0.2  # seconds; ssv2 clips run ~3s, too short for the default target stride
+        target_max_stride: 0.3  # seconds
+      kinetics:
+        mode: single
+        weight: 1.0
+      ego4d:
+        mode: segment
+        segment_seconds: 250
+        weight: 1.0
+    default_source:
+      mode: single
+      weight: 1.0
+  eval:
+    manifest: /home/rvm/datasets/test_manifest.csv
+    frame_size: [224, 224]
+    context_frames: 5
+    min_stride: 0.2  # seconds
+    max_stride: 0.4  # seconds
+    target_frames: 3
+    target_min_stride: 1.0  # seconds
+    target_max_stride: 1.5  # seconds
+    deterministic: true
+    sources:
+      ssv2:
+        mode: single
+        weight: 1.0
+        target_min_stride: 0.2  # seconds
+        target_max_stride: 0.3  # seconds
+      kinetics:
+        mode: single
+        weight: 1.0
+      ego4d:
+        mode: segment
+        segment_seconds: 250
+        weight: 1.0
+    default_source:
+      mode: single
+      weight: 1.0
+
+dataloader:
+  batch_size: 96
+  num_workers: 15
+  pin_memory: true
+  prefetch_factor: 4
+
+trainer:
+  checkpoint_dir: checkpoints/checkpoints_rwm_cls
+  lr: 1.5e-4          # recurrent core + decoder + repr_head (encoder frozen by default)
+  weight_decay: 0.05
+  betas: [0.9, 0.95]
+  eps: 1e-8
+  grad_clip_norm: 1.0
+  min_context: 5
+
+  num_epochs: 8
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.01
+
+  save_every_steps: 300
+  eval_every_steps: 300
+
+  amp: true
+  log_interval: 100
+
+  wandb_project: rwm-cls
+  wandb_name: null
