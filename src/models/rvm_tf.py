@@ -386,17 +386,26 @@ class RecurrentWorldModel(nn.Module):
     @torch.no_grad()
     def rollout(
         self,
-        context: torch.Tensor,           # (B, C, 3, H, W)
-        gaps: Sequence[float] | torch.Tensor,   # per-step time gaps to predict
-        context_times: Optional[torch.Tensor] = None,   # (B, C) float
+        context: torch.Tensor,                          # (B, C, 3, H, W)
+        targets: Optional[torch.Tensor] = None,          # (B, S, 3, H, W), optional -- only encoded to report target_feat
+        context_times: Optional[torch.Tensor] = None,    # (B, C) float
+        target_times: Optional[torch.Tensor] = None,     # (B, S) float, absolute query timestamps
         state: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Autoregressive rollout in latent space. Returns (B, S, n_tok, D).
+    ) -> dict:
+        """Autoregressive rollout in latent space. Returns pred of shape (B, S, n_tok, D).
 
         Each predicted frame is fed back through the recurrent core in place of
         encoder features, so this is the inference-time path the teacher-forced
         training objective is an approximation of. Expect the gap between the
         two to widen with horizon.
+
+        Same call signature as `teacher_forcing_rollout_repr`: `target_times`
+        supplies the absolute per-sample query timestamps directly (batched,
+        so heterogeneous per-clip timing is fine). `targets` is optional and,
+        if given, is only encoded to report `target_feat` for a direct diff
+        against `teacher_forcing_rollout_repr`'s output -- it is never fed
+        back into `core` here, which is what makes this the non-teacher-forced
+        path.
 
         The positional convention here is identical to `forward`: predicted
         frame s is tagged with the absolute time it would have had. Any
@@ -417,11 +426,18 @@ class RecurrentWorldModel(nn.Module):
             context_times = context_times.unsqueeze(0).expand(B, C)
         context_times = context_times.to(device=device, dtype=torch.float32)
 
-        if not torch.is_tensor(gaps):
-            gaps = torch.tensor(list(gaps), device=device, dtype=torch.float32)
-        gaps = gaps.to(device).float()
-        # absolute times of the predicted frames
-        step_times = context_times[:, -1:] + gaps.cumsum(0).unsqueeze(0)   # (B, S)
+        if target_times is None:
+            assert targets is not None, "need target_times or targets to know rollout length"
+            S = targets.shape[1]
+            target_times = C + torch.arange(S, device=device, dtype=torch.float32)
+            target_times = target_times.unsqueeze(0).expand(B, S)
+        target_times = target_times.to(device=device, dtype=torch.float32)
+        S = target_times.shape[1]
+
+        target_feat = None
+        if targets is not None:
+            target_feat = self.encode(targets.reshape(B * S, *targets.shape[2:]))
+            target_feat = target_feat.view(B, S, *target_feat.shape[1:])
 
         if state is None:
             state = feats.new_zeros(B, n_tok, self.d_enc)
@@ -434,8 +450,8 @@ class RecurrentWorldModel(nn.Module):
         hd = self.decoder.head_dim
         pixel = self.objective == "pixel"
         preds, imgs = [], []
-        for s in range(gaps.numel()):
-            tau = step_times[:, s]
+        for s in range(S):
+            tau = target_times[:, s]
             if self.context_mode == "full":
                 kv = torch.stack(memory, dim=1).reshape(B, -1, self.d_enc)
                 kv_tau = torch.stack(times, dim=1)                        # (B, k)
@@ -453,10 +469,6 @@ class RecurrentWorldModel(nn.Module):
             )
 
             if pixel:
-                # objective='pixel' never trains repr_head, so rolling out on
-                # images has no use for it. Reconstruct pixels instead, then
-                # re-encode that frame -- the core was only ever trained on
-                # real encoder features, never on repr_head's output.
                 patch_tokens = decoded if self.drop_cls else decoded[:, 1:]
                 recon_patches = self.recon_head(patch_tokens)
                 recon_img = self._unpatchify(recon_patches, grid=int(round(math.sqrt(P))))
@@ -485,6 +497,8 @@ class RecurrentWorldModel(nn.Module):
         }
         if pixel:
             out["recon"] = torch.stack(imgs, dim=1)          # (B, S, 3, H, W)
+        if target_feat is not None:
+            out["target_feat"] = target_feat                 # (B, S, n_tok, D)
         return out
 
     @torch.no_grad()

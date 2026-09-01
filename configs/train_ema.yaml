@@ -2,6 +2,7 @@ seed: 42
 
 model:
   encoder_name: facebook/dinov2-with-registers-small
+  context_mode: state
   # encoder_name: facebook/dinov2-small
   core_layers: 4
   core_heads: 8
@@ -51,7 +52,7 @@ dataset:
     target_frames: 3
     target_min_stride: 1.0  # seconds
     target_max_stride: 1.5  # seconds
-    deterministic: false
+    deterministic: true
     sources:
       ssv2:
         mode: single
