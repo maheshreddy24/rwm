@@ -197,9 +197,9 @@ class Trainer:
 
     def _evaluate_and_log(self):
         self._log_gradient_norms()
-        eval_loss = self.eval()
-        self.logger.info(f"epoch {self.epoch} step {self.global_step} eval_loss {eval_loss:.4f}")
-        wandb.log({"eval/loss": eval_loss, "epoch": self.epoch}, step=self.global_step)
+        # eval_loss = self.eval()
+        # self.logger.info(f"epoch {self.epoch} step {self.global_step} eval_loss {eval_loss:.4f}")
+        # wandb.log({"eval/loss": eval_loss, "epoch": self.epoch}, step=self.global_step)
         self.model.train()
 
     def _forward_batch(self, batch):

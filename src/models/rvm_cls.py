@@ -129,23 +129,28 @@ class RecurrentWorldModelCLS(nn.Module):
         periods = rope_periods_time(head_dim, self.t_periods, tau.device)
         return time_rope(tau, periods)
 
-    def _run_core(self, feats: torch.Tensor, frame_times: torch.Tensor,
-                  state: torch.Tensor, t: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """One recurrent step with the right time tags on x and on the state.
-        feats/state are (B, D); the core itself needs a token axis, so it is
-        added here (length 1) and squeezed back off on the way out."""
+    def _core_step(self, x: torch.Tensor, state: torch.Tensor,
+                   tau_now: torch.Tensor, tau_prev: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """One recurrent step. x, state: (B, D); tau_now, tau_prev: (B, 1). The
+        core itself needs a token axis, so it is added here (length 1) and
+        squeezed back off on the way out."""
         hd = self.core.head_dim
-        tau_now = frame_times[:, t: t + 1]
-        tau_prev = frame_times[:, max(t - 1, 0): max(t - 1, 0) + 1]
         x_pos = self._rope_cls(tau_now, hd)
         s_pos = self._rope_cls(tau_prev, hd)
-        x = feats[:, t: t + 1, :]
-        s = state.unsqueeze(1)
+        x3, s3 = x.unsqueeze(1), state.unsqueeze(1)
         if self.checkpoint_core and self.training:
-            out, new_state = checkpoint(self.core, x, s, x_pos, s_pos, use_reentrant=False)
+            out, new_state = checkpoint(self.core, x3, s3, x_pos, s_pos, use_reentrant=False)
         else:
-            out, new_state = self.core(x, s, x_pos, s_pos)
+            out, new_state = self.core(x3, s3, x_pos, s_pos)
         return out.squeeze(1), new_state.squeeze(1)
+
+    def _run_core(self, feats: torch.Tensor, frame_times: torch.Tensor,
+                  state: torch.Tensor, t: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """`_core_step` reading x and its previous-state time tag out of the
+        cached (B, N, D) feats/frame_times at position t, as `forward` needs."""
+        tau_now = frame_times[:, t: t + 1]
+        tau_prev = frame_times[:, max(t - 1, 0): max(t - 1, 0) + 1]
+        return self._core_step(feats[:, t, :], state, tau_now, tau_prev)
 
     def forward(
         self,
@@ -223,3 +228,227 @@ class RecurrentWorldModelCLS(nn.Module):
         """target is `feats` (B, N, D); pick out the frames pred was built for."""
         tgt = target[:, target_idx, :].detach()
         return F.smooth_l1_loss(pred, tgt, beta=self.loss_beta)
+
+    # @torch.no_grad()
+    # def rollout(
+    #     self,
+    #     context: torch.Tensor,                          # (B, C, 3, H, W)
+    #     gaps: torch.Tensor,                              # (S,) time gaps between predicted steps, seconds
+    #     context_times: Optional[torch.Tensor] = None,    # (B, C) float
+    #     state: Optional[torch.Tensor] = None,
+    # ) -> dict:
+    #     """Autoregressive rollout in latent space. Returns pred of shape (B, S, D).
+
+    #     Each predicted step is fed back through the recurrent core in place of
+    #     an encoded frame, same as `RecurrentWorldModel.rollout`, minus the
+    #     patch axis. `gaps[s]` is the elapsed time between step s-1 (or the
+    #     last context frame, for s=0) and step s; absolute target times are
+    #     built by cumulative-summing `gaps` onto the last context timestamp.
+    #     """
+    #     self.eval()
+    #     B, C = context.shape[:2]
+    #     device = context.device
+    #     feats = self.encode_cls(context.reshape(B * C, *context.shape[2:]))
+    #     feats = feats.view(B, C, self.d_enc)
+    #     dtype = feats.dtype
+
+    #     if context_times is None:
+    #         context_times = torch.arange(C, device=device, dtype=torch.float32).unsqueeze(0).expand(B, C)
+    #     context_times = context_times.to(device=device, dtype=torch.float32)
+
+    #     gaps = gaps.to(device=device, dtype=torch.float32)
+    #     S = gaps.numel()
+    #     target_times = context_times[:, -1:] + gaps.unsqueeze(0).cumsum(dim=1)   # (B, S)
+
+    #     if state is None:
+    #         state = feats.new_zeros(B, self.d_enc)
+    #     memory, times = [], []
+    #     for t in range(C):
+    #         out, state = self._run_core(feats, context_times, state, t)
+    #         memory.append(out)
+    #         times.append(context_times[:, t])
+
+    #     hd = self.decoder.head_dim
+    #     preds = []
+    #     for s in range(S):
+    #         tau = target_times[:, s: s + 1]
+    #         if self.context_mode == "full":
+    #             kv = self.decoder_embed(torch.stack(memory, dim=1))    # (B, len, Dd)
+    #             kv_tau = torch.stack(times, dim=1)                     # (B, len)
+    #         else:
+    #             kv = self.decoder_embed(memory[-1]).unsqueeze(1)       # (B, 1, Dd)
+    #             kv_tau = times[-1].unsqueeze(1)                        # (B, 1)
+
+    #         q = self.query_token.expand(B, 1, self.dec_dim).to(dtype)
+    #         decoded = self.decoder(
+    #             q, kv, None,
+    #             q_pos=self._rope_cls(tau, hd), kv_pos=self._rope_cls(kv_tau, hd),
+    #         )
+    #         step = self.repr_head(decoded).squeeze(1)      # (B, D)
+    #         preds.append(step)
+
+    #         # feed the prediction back, with its own timestamp
+    #         prev_tau = times[-1].unsqueeze(1)
+    #         out, state = self._core_step(step, state, tau, prev_tau)
+    #         memory.append(out)
+    #         times.append(tau.squeeze(1))
+
+    #     return {
+    #         "pred": torch.stack(preds, dim=1),             # (B, S, D)
+    #         "context_memory": torch.stack(memory, dim=1),  # (B, C+S, D)
+    #         "context_feat": feats,                          # (B, C, D)
+    #         "state": state,                                  # (B, D)
+    #     }
+
+    @torch.no_grad()
+    def rollout(
+        self,
+        context: torch.Tensor,                          # (B, C, 3, H, W)
+        targets: torch.Tensor,                           # (B, S, 3, H, W) ground-truth future frames, only encoded to report target_feat
+        context_times: Optional[torch.Tensor] = None,    # (B, C) float
+        target_times: Optional[torch.Tensor] = None,     # (B, S) float
+        state: Optional[torch.Tensor] = None,
+    ) -> dict:
+        """Autoregressive rollout in latent space. Same call signature as
+        `teacher_forcing_rollout_repr`, but the core's input at step s is the
+        model's OWN prediction fed back, not the true encoded target -- `targets`
+        is only encoded here to report `target_feat` for a direct diff against
+        `teacher_forcing_rollout_repr`'s output on the same clip, to see how much
+        of the degradation here is autoregressive drift vs. decoder underfit.
+        """
+        self.eval()
+        B, C = context.shape[:2]
+        S = targets.shape[1]
+        device = context.device
+
+        feats = self.encode_cls(context.reshape(B * C, *context.shape[2:])).view(B, C, self.d_enc)
+        target_feat = self.encode_cls(targets.reshape(B * S, *targets.shape[2:])).view(B, S, self.d_enc)
+        dtype = feats.dtype
+
+        if context_times is None:
+            context_times = torch.arange(C, device=device, dtype=torch.float32).unsqueeze(0).expand(B, C)
+        context_times = context_times.to(device=device, dtype=torch.float32)
+
+        if target_times is None:
+            target_times = C + torch.arange(S, device=device, dtype=torch.float32)
+            target_times = target_times.unsqueeze(0).expand(B, S)
+        target_times = target_times.to(device=device, dtype=torch.float32)
+
+        if state is None:
+            state = feats.new_zeros(B, self.d_enc)
+        memory, times = [], []
+        for t in range(C):
+            out, state = self._run_core(feats, context_times, state, t)
+            memory.append(out)
+            times.append(context_times[:, t])
+
+        hd = self.decoder.head_dim
+        preds = []
+        for s in range(S):
+            tau = target_times[:, s: s + 1]
+            if self.context_mode == "full":
+                kv = self.decoder_embed(torch.stack(memory, dim=1))    # (B, len, Dd)
+                kv_tau = torch.stack(times, dim=1)                     # (B, len)
+            else:
+                kv = self.decoder_embed(memory[-1]).unsqueeze(1)       # (B, 1, Dd)
+                kv_tau = times[-1].unsqueeze(1)                        # (B, 1)
+
+            q = self.query_token.expand(B, 1, self.dec_dim).to(dtype)
+            decoded = self.decoder(
+                q, kv, None,
+                q_pos=self._rope_cls(tau, hd), kv_pos=self._rope_cls(kv_tau, hd),
+            )
+            step = self.repr_head(decoded).squeeze(1)      # (B, D)
+            preds.append(step)
+
+            # feed the model's OWN prediction back, not the true target -- this is
+            # what makes it the non-teacher-forced path
+            prev_tau = times[-1].unsqueeze(1)
+            out, state = self._core_step(step, state, tau, prev_tau)
+            memory.append(out)
+            times.append(tau.squeeze(1))
+
+        return {
+            "pred": torch.stack(preds, dim=1),              # (B, S, D)
+            "target_feat": target_feat,                      # (B, S, D) ground-truth encoded targets
+            "context_memory": torch.stack(memory, dim=1),    # (B, C+S, D)
+            "context_feat": feats,                            # (B, C, D)
+            "state": state,                                    # (B, D)
+        }
+
+
+    @torch.no_grad()
+    def teacher_forcing_rollout_repr(
+        self,
+        context: torch.Tensor,                          # (B, C, 3, H, W)
+        targets: torch.Tensor,                           # (B, S, 3, H, W) ground-truth future frames
+        context_times: Optional[torch.Tensor] = None,    # (B, C) float
+        target_times: Optional[torch.Tensor] = None,     # (B, S) float
+        state: Optional[torch.Tensor] = None,
+    ) -> dict:
+        """Representation-space teacher-forced rollout. Same per-step query/decode
+        loop as `rollout`, but the core's input at step s is the TRUE encoded
+        target frame `targets[:, s]`, not the model's own prediction fed back --
+        isolates decoder underfit from the core's autoregressive drift. Diff
+        `out["pred"]` against `rollout`'s `pred` on the same clip to see how much
+        of rollout's degradation is drift vs. decoder underfit.
+        """
+        self.eval()
+        B, C = context.shape[:2]
+        S = targets.shape[1]
+        device = context.device
+
+        ctx_feats = self.encode_cls(context.reshape(B * C, *context.shape[2:])).view(B, C, self.d_enc)
+        tgt_feats = self.encode_cls(targets.reshape(B * S, *targets.shape[2:])).view(B, S, self.d_enc)
+        dtype = ctx_feats.dtype
+
+        if context_times is None:
+            context_times = torch.arange(C, device=device, dtype=torch.float32).unsqueeze(0).expand(B, C)
+        context_times = context_times.to(device=device, dtype=torch.float32)
+
+        if target_times is None:
+            target_times = C + torch.arange(S, device=device, dtype=torch.float32)
+            target_times = target_times.unsqueeze(0).expand(B, S)
+        target_times = target_times.to(device=device, dtype=torch.float32)
+
+        if state is None:
+            state = ctx_feats.new_zeros(B, self.d_enc)
+        memory, times = [], []
+        for t in range(C):
+            out, state = self._run_core(ctx_feats, context_times, state, t)
+            memory.append(out)
+            times.append(context_times[:, t])
+
+        hd = self.decoder.head_dim
+        preds = []
+        for s in range(S):
+            tau = target_times[:, s: s + 1]
+            if self.context_mode == "full":
+                kv = self.decoder_embed(torch.stack(memory, dim=1))    # (B, len, Dd)
+                kv_tau = torch.stack(times, dim=1)                     # (B, len)
+            else:
+                kv = self.decoder_embed(memory[-1]).unsqueeze(1)       # (B, 1, Dd)
+                kv_tau = times[-1].unsqueeze(1)                        # (B, 1)
+
+            q = self.query_token.expand(B, 1, self.dec_dim).to(dtype)
+            decoded = self.decoder(
+                q, kv, None,
+                q_pos=self._rope_cls(tau, hd), kv_pos=self._rope_cls(kv_tau, hd),
+            )
+            pred = self.repr_head(decoded).squeeze(1)      # (B, D)
+            preds.append(pred)
+
+            # teacher forcing: core sees the TRUE target frame's encoding, not
+            # its own prediction fed back
+            prev_tau = times[-1].unsqueeze(1)
+            out, state = self._core_step(tgt_feats[:, s], state, tau, prev_tau)
+            memory.append(out)
+            times.append(tau.squeeze(1))
+
+        return {
+            "pred": torch.stack(preds, dim=1),              # (B, S, D)
+            "target_feat": tgt_feats,                        # (B, S, D) ground-truth encoded targets
+            "context_memory": torch.stack(memory, dim=1),    # (B, C+S, D)
+            "context_feat": ctx_feats,                        # (B, C, D)
+            "state": state,
+        }

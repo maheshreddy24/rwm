@@ -51,6 +51,7 @@ dataset:
     deterministic: true
     sources:
       ssv2:
+      
         mode: single
         weight: 1.0
         target_min_stride: 0.2  # seconds
@@ -67,7 +68,7 @@ dataset:
       weight: 1.0
 
 dataloader:
-  batch_size: 96
+  batch_size: 256
   num_workers: 15
   pin_memory: true
   prefetch_factor: 4
