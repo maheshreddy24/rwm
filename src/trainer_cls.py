@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.datasets.rvm_dataset_tf import RVMDataset
 from src.models.rvm_cls import RecurrentWorldModelCLS
-from src.models.utils.variants import resolve_variant
+from src.models.utils.variants import MODEL_VARIANTS, resolve_variant
 from src.optimisation.optimizer_ema_cls import Trainer
 
 
@@ -60,6 +60,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/train_cls.yaml")
     parser.add_argument(
+        "--variant",
+        choices=list(MODEL_VARIANTS),
+        default=None,
+        help="override the config's model.variant",
+    )
+    parser.add_argument(
         "--resume",
         nargs="?",
         const="__latest__",
@@ -77,6 +83,9 @@ def main():
 
     if config.get("seed") is not None:
         set_seed(config["seed"])
+
+    if args.variant is not None:
+        config.setdefault("model", {})["variant"] = args.variant
 
     dataloader_config = config["dataloader"]
     train_loader = build_dataloader(
