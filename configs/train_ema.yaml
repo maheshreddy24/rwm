@@ -21,8 +21,8 @@ dataset:
     min_stride: 0.2  # seconds
     max_stride: 0.4  # seconds
     target_frames: 5
-    target_min_stride: 1.0  # seconds
-    target_max_stride: 1.5  # seconds
+    target_min_stride: 0.8  # seconds
+    target_max_stride: 1.0  # seconds
 
     frame_size: [252, 252]   # must match encoder patch_size (14) so H/patch is an integer grid
     # Keyed by the `source` column in the manifest.
@@ -50,8 +50,8 @@ dataset:
     min_stride: 0.2  # seconds
     max_stride: 0.4  # seconds
     target_frames: 3
-    target_min_stride: 1.0  # seconds
-    target_max_stride: 1.5  # seconds
+    target_min_stride: 0.8  # seconds
+    target_max_stride: 1.0  # seconds
     deterministic: true
     sources:
       ssv2:
@@ -83,7 +83,6 @@ trainer:
   betas: [0.9, 0.95]
   eps: 1e-8
   grad_clip_norm: 1.0
-  min_context: 5 # rwm
 
   num_epochs: 8
   warmup_ratio: 0.05

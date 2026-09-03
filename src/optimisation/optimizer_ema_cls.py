@@ -34,7 +34,9 @@ class Trainer:
         self.device = self.config.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = model.to(self.device)
-        self.min_context = self.config.get("min_context", 10)
+        # See optimizer_ema.Trainer: derive from the dataset's own context/target
+        # split rather than a separate trainer-level setting that could drift.
+        self.min_context = config["dataset"]["train"].get("context_frames") or self.config.get("min_context", 10)
         print(f"Device used is {self.device} ===========================")
 
         self.train_loader = train_loader

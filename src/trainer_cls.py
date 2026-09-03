@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.datasets.rvm_dataset_tf import RVMDataset
 from src.models.rvm_cls import RecurrentWorldModelCLS
+from src.models.utils.variants import resolve_variant
 from src.optimisation.optimizer_ema_cls import Trainer
 
 
@@ -89,7 +90,7 @@ def main():
         num_workers=dataloader_config.get("eval_num_workers", min(4, dataloader_config.get("num_workers", 4))),
     )
 
-    model = RecurrentWorldModelCLS(**config.get("model", {}))
+    model = RecurrentWorldModelCLS(**resolve_variant(config.get("model", {})))
     trainer = Trainer(model, train_loader, eval_loader, config)
 
     if args.resume is not None:

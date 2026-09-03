@@ -80,7 +80,6 @@ trainer:
   betas: [0.9, 0.95]
   eps: 1e-8
   grad_clip_norm: 1.0
-  min_context: 5
 
   num_epochs: 8
   warmup_ratio: 0.05

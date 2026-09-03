@@ -70,7 +70,11 @@ class Trainer:
         # the older RVM path reads it straight off self.config in
         # _teacher_representation instead.
         self.model.normalize_target = bool(self.config.get("normalize_target", False))
-        self.min_context = self.config.get("min_context", 10)
+        # `target_idx` starts where the dataset's own context segment ends, so
+        # this is read from `dataset.train.context_frames` -- the single source
+        # of truth for the context/target split -- instead of a separate
+        # trainer-level setting that could drift out of sync with it.
+        self.min_context = config["dataset"]["train"].get("context_frames") or self.config.get("min_context", 10)
         print(f"Device used is {self.device} ===========================")
 
         self.target_encoder = model.encoder  # frozen; shared weights, no separate EMA copy
