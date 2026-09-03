@@ -39,7 +39,8 @@ CSV_PATH = "/home/ego4d/data/v2/video_540ss_splits/test_ego4d.csv"
 CONFIG_PATH = "/home/rvm/configs/train_ema.yaml"
 CKPT_PATH = "/home/rvm/checkpoints/checkpoints_rwm/full_context/model_epoch1_step3900.pth"
 
-N_VIDEOS = 10
+N_VIDEOS = 320
+BATCH_SIZE = 32  # videos per forward pass -- raise if GPU/RAM has headroom
 STRIDES = [0.2, 0.4, 0.6, 1.0]  # seconds between target frames, swept
 
 C = 5  # context frames
@@ -53,7 +54,7 @@ N_PCA_COMPONENTS = 3
 POOL_MULTIPLIER = 3  # candidate pool = min(len(csv), POOL_MULTIPLIER * N_VIDEOS), to
                       # absorb videos that are too short / fail to decode at a given stride
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = "cuda"
 OUT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -119,10 +120,47 @@ def pca_top3_ratio(points: np.ndarray) -> float:
 def run_stride(model, df, stride_sec):
     gt_scores, pred_scores = [], []
     n_success = 0
+    batch_clips, batch_times = [], []  # accumulated until BATCH_SIZE, then sent together
 
-    pbar = tqdm(df.iterrows(), total=min(len(df), N_VIDEOS * POOL_MULTIPLIER), desc=f"stride={stride_sec}s")
-    for row_idx, row in pbar:
-        if n_success >= N_VIDEOS:
+    pbar = tqdm(total=min(len(df), N_VIDEOS), desc=f"stride={stride_sec}s")
+
+    def flush_batch():
+        nonlocal n_success
+        if not batch_clips:
+            return
+        clip_batch = torch.stack(batch_clips, dim=0)                       # (b, C+S, 3, H, W)
+        time_batch = torch.from_numpy(np.stack(batch_times).astype(np.float32))  # (b, C+S)
+
+        context = clip_batch[:, :C].to(DEVICE)
+        targets = clip_batch[:, C:].to(DEVICE)
+        context_times = time_batch[:, :C].to(DEVICE)
+        target_times = time_batch[:, C:].to(DEVICE)
+
+        with torch.no_grad():
+            out = model.teacher_forcing_rollout_repr(
+                context=context,
+                targets=targets,
+                context_times=context_times,
+                target_times=target_times,
+            )
+
+        pred = out["pred"][:, :, 1:, :].cpu().numpy()          # (b, S, P, D), CLS dropped
+        gt = out["target_feat"][:, :, 1:, :].cpu().numpy()     # (b, S, P, D)
+
+        for b in range(clip_batch.shape[0]):
+            frame_gt_scores = [pca_top3_ratio(gt[b, s]) for s in range(S)]
+            frame_pred_scores = [pca_top3_ratio(pred[b, s]) for s in range(S)]
+            gt_scores.append(float(np.mean(frame_gt_scores)))
+            pred_scores.append(float(np.mean(frame_pred_scores)))
+            n_success += 1
+            pbar.update(1)
+            pbar.set_postfix(gt=np.mean(gt_scores), pred=np.mean(pred_scores))
+
+        batch_clips.clear()
+        batch_times.clear()
+
+    for row_idx, row in df.iterrows():
+        if n_success + len(batch_clips) >= N_VIDEOS:
             break
 
         path = str(row["path"]).strip()
@@ -146,33 +184,12 @@ def run_stride(model, df, stride_sec):
             print(f"  [skip] decode failed {path}: {e}")
             continue
 
-        context = clip[:C].unsqueeze(0).to(DEVICE)        # (1, C, 3, H, W)
-        targets = clip[C:].unsqueeze(0).to(DEVICE)        # (1, S, 3, H, W)
-        times = torch.from_numpy((indices / fps).astype(np.float32))
-        context_times = times[:C].unsqueeze(0).to(DEVICE)
-        target_times = times[C:].unsqueeze(0).to(DEVICE)
+        batch_clips.append(clip)
+        batch_times.append(indices / fps)
+        if len(batch_clips) == BATCH_SIZE:
+            flush_batch()
 
-        with torch.no_grad():
-            out = model.teacher_forcing_rollout_repr(
-                context=context,
-                targets=targets,
-                context_times=context_times,
-                target_times=target_times,
-            )
-
-        pred = out["pred"][:, :, 1:, :]          # (1, S, P, D), CLS dropped
-        gt = out["target_feat"][:, :, 1:, :]     # (1, S, P, D)
-
-        frame_gt_scores, frame_pred_scores = [], []
-        for s in range(S):
-            frame_gt_scores.append(pca_top3_ratio(gt[0, s].cpu().numpy()))
-            frame_pred_scores.append(pca_top3_ratio(pred[0, s].cpu().numpy()))
-
-        gt_scores.append(float(np.mean(frame_gt_scores)))
-        pred_scores.append(float(np.mean(frame_pred_scores)))
-        n_success += 1
-        pbar.set_postfix(done=n_success, gt=np.mean(gt_scores), pred=np.mean(pred_scores))
-
+    flush_batch()  # remainder smaller than BATCH_SIZE
     pbar.close()
     return gt_scores, pred_scores
 
