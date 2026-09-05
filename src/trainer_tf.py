@@ -42,7 +42,7 @@ def build_dataloader(dataset_config, dataloader_config, shuffle: bool, persisten
         num_workers = dataloader_config.get("num_workers", 4)
     return DataLoader(
         dataset,
-        batch_size=dataloader_config.get("batch_size", 8),
+        batch_size=dataloader_config.get("batch_size", 24),
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=dataloader_config.get("pin_memory", True),

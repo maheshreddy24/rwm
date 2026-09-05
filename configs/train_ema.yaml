@@ -1,15 +1,8 @@
 seed: 42
 
 model:
-  encoder_name: facebook/dinov2-with-registers-small
-  context_mode: full
-  # encoder_name: facebook/dinov2-small
-  core_layers: 4
-  core_heads: 8
-  dec_dim: 512
-  dec_layers: 3
-  dec_heads: 16
-  dec_mlp: 768
+  variant: base
+  context_mode: state
   objective: repr
   pixel_recon: False
 
@@ -21,8 +14,8 @@ dataset:
     min_stride: 0.2  # seconds
     max_stride: 0.4  # seconds
     target_frames: 5
-    target_min_stride: 0.5  # seconds
-    target_max_stride: 0.8  # seconds
+    target_min_stride: 0.8  # seconds
+    target_max_stride: 1.0  # seconds
 
     frame_size: [252, 252]   # must match encoder patch_size (14) so H/patch is an integer grid
     # Keyed by the `source` column in the manifest.
@@ -50,8 +43,8 @@ dataset:
     min_stride: 0.2  # seconds
     max_stride: 0.4  # seconds
     target_frames: 3
-    target_min_stride: 0.5  # seconds
-    target_max_stride: 0.8  # seconds
+    target_min_stride: 0.8  # seconds
+    target_max_stride: 1.0  # seconds
     deterministic: true
     sources:
       ssv2:
@@ -71,13 +64,13 @@ dataset:
       weight: 1.0
 
 dataloader:
-  batch_size: 32
+  batch_size: 24
   num_workers: 15
   pin_memory: true
   prefetch_factor: 4
 
 trainer:
-  checkpoint_dir: checkpoints/checkpoints_rwm
+  checkpoint_dir: checkpoints/checkpoints_rwm_base
   lr: 1.5e-4          # recurrent core + decoder + repr_head
   weight_decay: 0.05
   betas: [0.9, 0.95]
@@ -90,8 +83,9 @@ trainer:
 
   normalize_target: false
 
-  save_every_steps: 300
-  eval_every_steps: 300
+  save_every_steps: 2000
+  eval_every_steps: 6000
+  
 
   amp: true
   log_interval: 100
