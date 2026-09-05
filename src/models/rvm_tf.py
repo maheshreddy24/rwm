@@ -48,8 +48,18 @@ class RecurrentWorldModel(nn.Module):
     Args:
         encoder:        pre-built HF backbone; must expose .embeddings,
                         .encoder, .layernorm, .config. Downloads if None.
+        core_dim:       width the recurrent core operates at. Decoupled from
+                        the encoder's own width (`d_enc`) by `adapter`, a
+                        trainable 2-layer MLP that projects every encoded
+                        token from encoder space into core space -- this is
+                        what lets the core be sized (see CORE_VARIANTS)
+                        independently of whichever encoder is loaded, frozen
+                        or not.
         freeze_encoder: freeze the encoder and use it directly for targets
                         (detached). Cheapest and safest starting point.
+                        `adapter` and `core` are never frozen by this --
+                        they always train, since they're what has to learn
+                        the encoder -> core projection.
         use_ema:        if the encoder is trainable, keep an EMA copy to
                         produce targets. Without one of freeze_encoder or
                         use_ema, gradients reach both sides of the loss and
@@ -82,7 +92,8 @@ class RecurrentWorldModel(nn.Module):
     def __init__(
         self,
         encoder: Optional[nn.Module] = None,
-        encoder_name: str = "facebook/dinov2-with-registers-small",
+        encoder_name: str = "facebook/dinov2-with-registers-base",
+        core_dim: int = 384,
         core_layers: int = 4,
         core_heads: int = 8,
         core_mlp: Optional[int] = None,
@@ -118,6 +129,7 @@ class RecurrentWorldModel(nn.Module):
         self.patch = encoder.config.patch_size
         # 0 for encoders without registers (e.g. plain dinov2-small).
         self.num_register_tokens = getattr(encoder.config, "num_register_tokens", 0)
+        self.core_dim = core_dim
         self.dec_dim = dec_dim
         self.freeze_encoder = freeze_encoder
         self.context_mode = context_mode
@@ -145,10 +157,19 @@ class RecurrentWorldModel(nn.Module):
         else:
             self.target_encoder = None
 
-        core_mlp = core_mlp or 4 * self.d_enc
-        self.core = GatedRecurrentCore(self.d_enc, core_heads, core_layers, core_mlp)
+        # trainable projection from encoder space into core space, applied to
+        # every token right before it reaches `core` -- see `core_dim` above.
+        self.adapter = nn.Sequential(
+            nn.LayerNorm(self.d_enc),
+            nn.Linear(self.d_enc, 4 * core_dim),
+            nn.GELU(),
+            nn.Linear(4 * core_dim, core_dim),
+        )
 
-        self.decoder_embed = nn.Linear(self.d_enc, dec_dim)
+        core_mlp = core_mlp or 4 * core_dim
+        self.core = GatedRecurrentCore(core_dim, core_heads, core_layers, core_mlp)
+
+        self.decoder_embed = nn.Linear(core_dim, dec_dim)
         self.decoder = CrossAttentionTransformer(dec_dim, dec_heads, dec_layers, dec_mlp)
         self.repr_head = nn.Linear(dec_dim, self.d_enc)
 
@@ -238,20 +259,22 @@ class RecurrentWorldModel(nn.Module):
         return axial_rope(coords, per)
 
 
-    def _run_core(self, feats: torch.Tensor, frame_times: torch.Tensor,
+    def _run_core(self, core_feats: torch.Tensor, frame_times: torch.Tensor,
                   state: torch.Tensor, t: int, n_tok: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """One recurrent step with the right time tags on x and on the state.
         `t` indexes position in the sampled clip; `frame_times[:, t]` is that
-        frame's real timestamp in seconds, which is what actually enters RoPE."""
+        frame's real timestamp in seconds, which is what actually enters RoPE.
+        `core_feats` must already be in core space, i.e. passed through
+        `self.adapter`."""
         hd = self.core.head_dim
         tau_now = frame_times[:, t]
         tau_prev = frame_times[:, max(t - 1, 0)]
         x_pos = self._rope(self._coords(tau_now, n_tok - (0 if self.drop_cls else 1)), hd)
         s_pos = self._rope(self._coords(tau_prev, n_tok - (0 if self.drop_cls else 1)), hd)
         if self.checkpoint_core and self.training:
-            return checkpoint(self.core, feats[:, t], state, x_pos, s_pos,
+            return checkpoint(self.core, core_feats[:, t], state, x_pos, s_pos,
                               use_reentrant=False)
-        return self.core(feats[:, t], state, x_pos, s_pos)
+        return self.core(core_feats[:, t], state, x_pos, s_pos)
 
     def forward(
         self,
@@ -279,19 +302,20 @@ class RecurrentWorldModel(nn.Module):
         n_tok = feats.shape[2]
         P = n_tok if self.drop_cls else n_tok - 1
         dtype = feats.dtype
+        core_feats = self.adapter(feats)                           # (B, N, n_tok, core_dim)
 
         if state is None:
-            state = feats.new_zeros(B, n_tok, self.d_enc)
+            state = feats.new_zeros(B, n_tok, self.core_dim)
         memory = []
         for t in range(N):
-            out, state = self._run_core(feats, frame_times, state, t, n_tok)
+            out, state = self._run_core(core_feats, frame_times, state, t, n_tok)
             memory.append(out)
-        memory = torch.stack(memory, dim=1)                        # (B, N, n_tok, D)
+        memory = torch.stack(memory, dim=1)                        # (B, N, n_tok, core_dim)
 
         hd = self.decoder.head_dim
         if self.context_mode == "full":
             L = N * n_tok
-            kv = self.decoder_embed(memory.reshape(B, L, self.d_enc))  # bs, t, num_p, emb_d --> bs, t * num_p, emb_d
+            kv = self.decoder_embed(memory.reshape(B, L, self.core_dim))  # bs, t, num_p, emb_d --> bs, t * num_p, emb_d
             kv = kv.unsqueeze(1).expand(B, Tt, L, self.dec_dim).reshape(B * Tt, L, self.dec_dim) 
 
             # memory[:, t] summarizes everything up to and including frame t,
@@ -420,6 +444,7 @@ class RecurrentWorldModel(nn.Module):
         n_tok = feats.shape[2]
         P = n_tok if self.drop_cls else n_tok - 1
         dtype = feats.dtype
+        core_feats = self.adapter(feats)
 
         if context_times is None:
             context_times = torch.arange(C, device=device, dtype=torch.float32)
@@ -440,10 +465,10 @@ class RecurrentWorldModel(nn.Module):
             target_feat = target_feat.view(B, S, *target_feat.shape[1:])
 
         if state is None:
-            state = feats.new_zeros(B, n_tok, self.d_enc)
+            state = feats.new_zeros(B, n_tok, self.core_dim)
         memory, times = [], []
         for t in range(C):
-            out, state = self._run_core(feats, context_times, state, t, n_tok)
+            out, state = self._run_core(core_feats, context_times, state, t, n_tok)
             memory.append(out)
             times.append(context_times[:, t])
 
@@ -453,7 +478,7 @@ class RecurrentWorldModel(nn.Module):
         for s in range(S):
             tau = target_times[:, s]
             if self.context_mode == "full":
-                kv = torch.stack(memory, dim=1).reshape(B, -1, self.d_enc)
+                kv = torch.stack(memory, dim=1).reshape(B, -1, self.core_dim)
                 kv_tau = torch.stack(times, dim=1)                        # (B, k)
             else:
                 kv = memory[-1]
@@ -478,11 +503,13 @@ class RecurrentWorldModel(nn.Module):
                 step = self.repr_head(decoded)
             preds.append(step)
 
-            # feed the prediction back, with its own timestamp
+            # feed the prediction back, with its own timestamp -- through the
+            # adapter, since `step` lives in encoder space but `core` expects
+            # core space.
             prev_tau = times[-1]
             hdc = self.core.head_dim
             out, state = self.core(
-                step, state,
+                self.adapter(step), state,
                 self._rope(self._coords(tau, P), hdc),
                 self._rope(self._coords(prev_tau, P), hdc),
             )
@@ -532,6 +559,7 @@ class RecurrentWorldModel(nn.Module):
         n_tok = ctx_feats.shape[2]
         P = n_tok if self.drop_cls else n_tok - 1
         dtype = ctx_feats.dtype
+        core_ctx_feats = self.adapter(ctx_feats)
 
         if context_times is None:
             context_times = torch.arange(C, device=device, dtype=torch.float32)
@@ -544,10 +572,10 @@ class RecurrentWorldModel(nn.Module):
         target_times = target_times.to(device=device, dtype=torch.float32)
 
         if state is None:
-            state = ctx_feats.new_zeros(B, n_tok, self.d_enc)
+            state = ctx_feats.new_zeros(B, n_tok, self.core_dim)
         memory, times = [], []
         for t in range(C):
-            out, state = self._run_core(ctx_feats, context_times, state, t, n_tok)
+            out, state = self._run_core(core_ctx_feats, context_times, state, t, n_tok)
             memory.append(out)
             times.append(context_times[:, t])
 
@@ -558,7 +586,7 @@ class RecurrentWorldModel(nn.Module):
             tau = target_times[:, s]
 
             if self.context_mode == "full":
-                kv = torch.stack(memory, dim=1).reshape(B, -1, self.d_enc)
+                kv = torch.stack(memory, dim=1).reshape(B, -1, self.core_dim)
                 kv_tau = torch.stack(times, dim=1)                 # (B, k)
             else:
                 kv = memory[-1]
@@ -579,10 +607,11 @@ class RecurrentWorldModel(nn.Module):
             imgs.append(recon_img)
 
             # teacher forcing: core sees the TRUE target frame's encoding, not
-            # its own reconstruction re-encoded
+            # its own reconstruction re-encoded -- through the adapter, same
+            # as every other path into `core`.
             prev_tau = times[-1]
             out, state = self.core(
-                tgt_feats[:, s], state,
+                self.adapter(tgt_feats[:, s]), state,
                 self._rope(self._coords(tau, P), hdc),
                 self._rope(self._coords(prev_tau, P), hdc),
             )
@@ -632,6 +661,7 @@ class RecurrentWorldModel(nn.Module):
         n_tok = ctx_feats.shape[2]
         P = n_tok if self.drop_cls else n_tok - 1
         dtype = ctx_feats.dtype
+        core_ctx_feats = self.adapter(ctx_feats)
 
         if context_times is None:
             context_times = torch.arange(C, device=device, dtype=torch.float32)
@@ -644,10 +674,10 @@ class RecurrentWorldModel(nn.Module):
         target_times = target_times.to(device=device, dtype=torch.float32)
 
         if state is None:
-            state = ctx_feats.new_zeros(B, n_tok, self.d_enc)
+            state = ctx_feats.new_zeros(B, n_tok, self.core_dim)
         memory, times = [], []
         for t in range(C):
-            out, state = self._run_core(ctx_feats, context_times, state, t, n_tok)
+            out, state = self._run_core(core_ctx_feats, context_times, state, t, n_tok)
             memory.append(out)
             times.append(context_times[:, t])
 
@@ -657,7 +687,7 @@ class RecurrentWorldModel(nn.Module):
             tau = target_times[:, s]
 
             if self.context_mode == "full":
-                kv = torch.stack(memory, dim=1).reshape(B, -1, self.d_enc)
+                kv = torch.stack(memory, dim=1).reshape(B, -1, self.core_dim)
                 kv_tau = torch.stack(times, dim=1)                 # (B, k)
             else:
                 kv = memory[-1]
@@ -676,10 +706,11 @@ class RecurrentWorldModel(nn.Module):
             preds.append(pred)
 
             # teacher forcing: core sees the TRUE target frame's encoding, not
-            # its own prediction fed back
+            # its own prediction fed back -- through the adapter, same as
+            # every other path into `core`.
             prev_tau = times[-1]
             out, state = self.core(
-                tgt_feats[:, s], state,
+                self.adapter(tgt_feats[:, s]), state,
                 self._rope(self._coords(tau, P), hdc),
                 self._rope(self._coords(prev_tau, P), hdc),
             )
@@ -707,14 +738,14 @@ class RecurrentWorldModel(nn.Module):
         B, n_tok = tokens.shape[0], tokens.shape[1]
         P = n_tok if self.drop_cls else n_tok - 1
         if state is None:
-            state = tokens.new_zeros(tokens.shape)
+            state = tokens.new_zeros(B, n_tok, self.core_dim)
         if t_now is None:
             t_now = tokens.new_zeros(B)
         if t_prev is None:
             t_prev = t_now
         hd = self.core.head_dim
         return self.core(
-            tokens, state,
+            self.adapter(tokens), state,
             self._rope(self._coords(t_now.to(tokens.device), P), hd),
             self._rope(self._coords(t_prev.to(tokens.device), P), hd),
         )

@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.datasets.rvm_dataset_tf import RVMDataset
 from src.models.rvm_tf import RecurrentWorldModel
-from src.models.utils.variants import MODEL_VARIANTS, resolve_variant
+from src.models.utils.variants import CORE_VARIANTS, resolve_variant
 from src.optimisation.optimizer_ema import Trainer
 
 
@@ -59,7 +59,7 @@ def main():
     parser.add_argument("--config", default="configs/train_ema.yaml")
     parser.add_argument(
         "--variant",
-        choices=list(MODEL_VARIANTS),
+        choices=list(CORE_VARIANTS),
         default=None,
         help="override the config's model.variant",
     )
@@ -97,7 +97,7 @@ def main():
         num_workers=dataloader_config.get("eval_num_workers", min(4, dataloader_config.get("num_workers", 4))),
     )
 
-    model = RecurrentWorldModel(**resolve_variant(config.get("model", {})))
+    model = RecurrentWorldModel(**resolve_variant(config.get("model", {}), variants=CORE_VARIANTS))
 
     trainer = Trainer(model, train_loader, eval_loader, config)
 
