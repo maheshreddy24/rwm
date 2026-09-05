@@ -30,6 +30,9 @@ conda install -c conda-forge ffmpeg
 echo "Environment '${ENV_NAME}' is ready."
 
 sudo apt install nvtop
+sudo apt install tmux 
+sudo apt install htop
+
 
 
 # mkdir -p rvm_ckpts
