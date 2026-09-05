@@ -301,6 +301,11 @@ class Trainer:
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.scheduler.step()
+        # RecurrentWorldModel's adapter target is an EMA copy of the online adapter,
+        # updated by momentum rather than gradient -- the older RVM model has no
+        # such method, hence the guard.
+        if hasattr(self.model, "update_ema_adapter"):
+            self.model.update_ema_adapter()
         return loss.item()
 
     def save_eval_images(self, recon: torch.Tensor, gt: torch.Tensor, step: int, epoch: int):

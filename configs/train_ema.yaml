@@ -3,8 +3,7 @@ seed: 42
 model:
   variant: base
   context_mode: state
-  objective: repr
-  pixel_recon: False
+  preserve_ratio: 0.2
 
 
 dataset:
