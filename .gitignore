@@ -44,11 +44,12 @@ wandb
 local_tests.ipynb
 *.txt
 datasets/IntPhys2.zip
-
-/src_jax
-/temp
+src_jax
+src_jax/
+temp
 ssv2_setup.sh
 gitc
 rvm_ckpts
 intphys_v2
-
+.jax_cache
+.vscode
